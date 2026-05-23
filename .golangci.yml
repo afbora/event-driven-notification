@@ -1,0 +1,49 @@
+# .golangci.yml — golangci-lint v2 configuration.
+#
+# Linter set fixed by CLAUDE.md §6 and PLAN.md Phase 1 task 4.
+# Thresholds are intentionally conservative for Phase 1; tighten as the codebase
+# grows and patterns emerge. Changes here should be paired with an ADR if they
+# materially relax the defaults.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck       # report unchecked errors
+    - gocritic       # opinionated style and performance checks
+    - gocyclo        # cyclomatic complexity ceiling
+    - gosec          # common security mistakes
+    - govet          # vet from the stdlib
+    - ineffassign    # ineffective assignments
+    - misspell       # spelling in comments and strings
+    - revive         # idiomatic Go style (golint successor)
+    - staticcheck    # the SA family of static checks
+    - unused         # unused functions, types, variables
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+    misspell:
+      locale: US
+
+  exclusions:
+    rules:
+      # Tests legitimately exceed normal complexity (table-driven cases) and
+      # frequently trip gosec heuristics around hard-coded credentials in fixtures.
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gosec
+      # cmd/*/main.go ties every dependency together; some breadth is expected.
+      - path: cmd/.+/main\.go
+        linters:
+          - gocyclo
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
