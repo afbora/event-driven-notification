@@ -1,0 +1,76 @@
+# .github/workflows/ci.yml — backend CI pipeline.
+#
+# Three independent jobs that must all pass before a PR can merge:
+#   - lint        : golangci-lint v2 across the whole module
+#   - test-unit   : go test -race ./...
+#   - build       : compile every cmd/* binary on Linux
+#
+# Integration / e2e jobs and the SonarCloud upload land in phase 7 once those
+# test suites exist (PLAN.md tasks 7-1 through 7-6).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Pinning is omitted on purpose: golangci-lint-action@v6 ships with a
+          # tested-against version of golangci-lint v2.x. Override here only if
+          # a future patch breaks the build.
+          args: --timeout=5m
+
+  test-unit:
+    name: Unit tests (race detector)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -race ./...
+
+  build:
+    name: Build all binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compile cmd/*
+        # `./cmd/...` compiles every main package under cmd/ without dropping
+        # binaries on disk — the goal here is a clean compile, not an artefact.
+        run: go build -trimpath ./cmd/...
