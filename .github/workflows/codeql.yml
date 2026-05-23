@@ -1,0 +1,70 @@
+# .github/workflows/codeql.yml — GitHub CodeQL security scanning for Go.
+#
+# Runs on every push to main, every PR targeting main, and once a week to catch
+# vulnerabilities disclosed against the same code after merge. Findings appear
+# under the repository's "Security" tab and on the PR check summary.
+#
+# Why both PR + weekly schedule?
+#   - PR coverage stops a new vulnerability from sneaking in.
+#   - Weekly schedule catches vulnerabilities disclosed AGAINST already-merged
+#     code (e.g., a CVE published next month that matches a function we wrote
+#     today). Without the schedule, that risk goes unnoticed.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays at 05:30 UTC — low-traffic time on shared runners.
+    - cron: '30 5 * * 1'
+
+permissions:
+  actions: read           # required by CodeQL to read workflow runs
+  contents: read          # required to check out the source
+  security-events: write  # required to upload findings to the Security tab
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        # Pin to the version declared in go.mod so CodeQL's autobuild compiles
+        # against the same toolchain CI and dev use.
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds queries beyond the default set that are
+          # particularly useful for backend services (TLS misuse, command
+          # injection, SSRF patterns, etc.). The trade-off is slightly longer
+          # analysis time, which is acceptable for a scheduled / pre-merge run.
+          queries: security-extended
+
+      - name: Autobuild
+        # For Go, CodeQL's autobuild runs `go build ./...` which is exactly
+        # what we want — every cmd/* binary plus the internal/ tree.
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
