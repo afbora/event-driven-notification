@@ -1,0 +1,18 @@
+# .air.api.toml — hot-reload configuration for cmd/api during development.
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd          = "go build -o ./tmp/api ./cmd/api"
+  bin          = "tmp/api"
+  include_dir  = ["cmd/api", "internal", "api"]
+  include_ext  = ["go", "yaml", "yml"]
+  exclude_dir  = ["tmp", "bin", "docs", "deploy", ".git", ".github", ".claude", "tests"]
+  exclude_regex = ["_test\\.go"]
+  delay        = 1000
+  kill_delay   = "1s"
+  log          = "build-errors.log"
+
+[log]
+  time = true

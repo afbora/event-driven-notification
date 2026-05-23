@@ -1,0 +1,220 @@
+# docker-compose.yml — single-command bring-up of the entire notification stack.
+#
+# Quick start (no .env file needed; see ADR-0010):
+#   docker compose up -d
+#
+# Endpoints once running:
+#   API              http://localhost:8080
+#   asynqmon         http://localhost:8081
+#   Adminer          http://localhost:8082   (system: PostgreSQL, server: postgres, user/pass: notification)
+#   Redis Commander  http://localhost:8083
+#   Prometheus       http://localhost:9090
+#   AlertManager     http://localhost:9093
+#   Grafana          http://localhost:3001   (admin / admin)
+#
+# Production overrides (real secrets, image pins, scaling, replicas) belong at
+# the orchestration layer (Kubernetes ConfigMap, secrets manager, Helm values).
+# See ADR-0010 for the rationale behind keeping defaults inline here.
+
+services:
+
+  # --- Datastores ----------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     notification
+      POSTGRES_PASSWORD: notification
+      POSTGRES_DB:       notification
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:     ["CMD", "pg_isready", "-U", "notification", "-d", "notification"]
+      interval: 5s
+      timeout:  3s
+      retries:  5
+    networks: [notification-net]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:     ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout:  3s
+      retries:  5
+    networks: [notification-net]
+
+  # --- Application binaries (dev image + air hot-reload) -------------------
+
+  api:
+    build:
+      context:    .
+      dockerfile: Dockerfile.dev
+    command: ["air", "-c", ".air.api.toml"]
+    environment:
+      DATABASE_URL:                postgres://notification:notification@postgres:5432/notification?sslmode=disable
+      REDIS_URL:                   redis://redis:6379/0
+      HTTP_PORT:                   "8080"
+      LOG_LEVEL:                   info
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context:    .
+      dockerfile: Dockerfile.dev
+    command: ["air", "-c", ".air.worker.toml"]
+    environment:
+      DATABASE_URL:                postgres://notification:notification@postgres:5432/notification?sslmode=disable
+      REDIS_URL:                   redis://redis:6379/0
+      LOG_LEVEL:                   info
+      WORKER_CONCURRENCY:          "10"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  reconciler:
+    build:
+      context:    .
+      dockerfile: Dockerfile.dev
+    command: ["air", "-c", ".air.reconciler.toml"]
+    environment:
+      DATABASE_URL:                postgres://notification:notification@postgres:5432/notification?sslmode=disable
+      REDIS_URL:                   redis://redis:6379/0
+      LOG_LEVEL:                   info
+      RECONCILER_INTERVAL:         "1m"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  # --- Operational UIs -----------------------------------------------------
+
+  asynqmon:
+    # Production: pin to a specific tag (e.g. hibiken/asynqmon:0.7.2).
+    image: hibiken/asynqmon:latest
+    command:
+      - --redis-addr=redis:6379
+    ports:
+      - "8081:8080"
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  adminer:
+    # Production: not deployed; this is a developer convenience only.
+    image: adminer:4
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  redis-commander:
+    # Production: not deployed; developer convenience only.
+    image: rediscommander/redis-commander:latest
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8083:8081"
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [notification-net]
+    restart: unless-stopped
+
+  # --- Observability stack -------------------------------------------------
+
+  prometheus:
+    # Production: pin a specific release (e.g. prom/prometheus:v2.55.0).
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [notification-net]
+    restart: unless-stopped
+
+  alertmanager:
+    # Production: pin a specific release (e.g. prom/alertmanager:v0.27.0).
+    image: prom/alertmanager:latest
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks: [notification-net]
+    restart: unless-stopped
+
+  grafana:
+    # Production: pin a specific release (e.g. grafana/grafana:11.2.0) and
+    # replace the admin password with a secret-manager-backed value.
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks: [notification-net]
+    restart: unless-stopped
+
+# --- Volumes & network -----------------------------------------------------
+
+volumes:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+  go-mod-cache:
+  go-build-cache:
+
+networks:
+  notification-net:
+    driver: bridge
