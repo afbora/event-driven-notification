@@ -1,3 +1,4 @@
+// Package main runs the migrate binary.
 package main
 
 import "fmt"

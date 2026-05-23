@@ -1,3 +1,4 @@
+// Package main runs the worker binary.
 package main
 
 import "fmt"

@@ -1,3 +1,4 @@
+// Package main runs the reconciler binary.
 package main
 
 import "fmt"

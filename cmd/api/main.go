@@ -1,3 +1,4 @@
+// Package main runs the api binary.
 package main
 
 import "fmt"
