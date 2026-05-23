@@ -1,0 +1,23 @@
+# Dockerfile.dev — development image used by docker-compose for api / worker / reconciler.
+#
+# Source is bind-mounted into /src at runtime; `air` rebuilds on file changes.
+# The production image (single-binary, distroless) lives in `Dockerfile`.
+#
+# This image uses a newer Go toolchain than the production image because
+# dev tooling (notably `air`) often requires a more recent Go release than the
+# project's declared minimum. CLAUDE.md §6 sets the language floor at 1.23
+# (go.mod stays at `go 1.23`); the toolchain is allowed to be newer.
+
+ARG GO_VERSION=1.26
+
+FROM golang:${GO_VERSION}-alpine
+
+RUN apk add --no-cache git curl tzdata ca-certificates make
+
+# Install air for hot reload. Pinned to a major version line; bump explicitly
+# when tooling upgrades are intentional.
+RUN go install github.com/air-verse/air@latest
+
+WORKDIR /src
+
+# The actual command (`air -c .air.<binary>.toml`) is provided by compose.

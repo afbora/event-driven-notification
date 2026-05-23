@@ -1,0 +1,13 @@
+# AlertManager configuration — phase 1 skeleton.
+# Full routing (critical → webhook-critical, warning → webhook-warning) arrives
+# in phase 6 task 10. Production swap-in points (Slack, PagerDuty, email) live
+# in the same file as commented blocks.
+
+route:
+  receiver: 'default'
+  group_wait:      10s
+  group_interval:  30s
+  repeat_interval: 1h
+
+receivers:
+  - name: 'default'

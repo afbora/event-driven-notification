@@ -1,0 +1,43 @@
+# EditorConfig — https://editorconfig.org/
+# Authoritative formatting rules for every editor that supports the spec.
+# Go files are still formatted by gofmt/goimports (enforced via golangci-lint);
+# this file just keeps non-Go files in line with the same conventions.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go uses tabs by convention (gofmt enforces this; we mirror it here for IDEs that
+# read .editorconfig before invoking gofmt).
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# Makefiles require literal tabs for recipe lines — never expand to spaces.
+[Makefile]
+indent_style = tab
+
+# Shell scripts: POSIX convention is 2-space indent; keep LF line endings strict
+# so scripts copied into the Linux Docker image are not corrupted by Windows checkouts.
+[*.sh]
+indent_size = 2
+
+# SQL migrations: 2-space indent matches the sqlc / golang-migrate community style.
+[*.sql]
+indent_size = 2
+
+# YAML is whitespace-sensitive; 2 spaces is the de-facto standard
+# (Docker Compose, GitHub Actions, Prometheus alert rules all assume this).
+[*.{yml,yaml}]
+indent_size = 2
+
+# Markdown: trailing whitespace is sometimes meaningful (two spaces = line break).
+# Do not trim it in this file type, even though we trim it everywhere else.
+[*.md]
+trim_trailing_whitespace = false

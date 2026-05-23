@@ -1,0 +1,5 @@
+# Prometheus alert rules — phase 1 skeleton.
+# Concrete rules (HighQueueDepth, WorkerProcessingStalled, etc.) arrive in
+# phase 6 task 9 alongside RUNBOOK.md entries.
+
+groups: []

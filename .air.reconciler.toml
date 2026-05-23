@@ -1,0 +1,18 @@
+# .air.reconciler.toml — hot-reload configuration for cmd/reconciler during development.
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd          = "go build -o ./tmp/reconciler ./cmd/reconciler"
+  bin          = "tmp/reconciler"
+  include_dir  = ["cmd/reconciler", "internal"]
+  include_ext  = ["go", "yaml", "yml"]
+  exclude_dir  = ["tmp", "bin", "docs", "deploy", ".git", ".github", ".claude", "tests"]
+  exclude_regex = ["_test\\.go"]
+  delay        = 1000
+  kill_delay   = "1s"
+  log          = "build-errors.log"
+
+[log]
+  time = true

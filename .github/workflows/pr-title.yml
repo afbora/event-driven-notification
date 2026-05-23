@@ -1,0 +1,61 @@
+# .github/workflows/pr-title.yml — enforce Conventional Commits on PR titles.
+#
+# CLAUDE.md §8 defines the format: <type>(<scope>): <subject>
+#   - imperative, lowercase, no trailing period
+#   - allowed types: feat, fix, test, refactor, chore, docs, perf, ci, build
+#   - scope is optional (e.g. `chore: add gitignore` vs `feat(domain): add channel`)
+#
+# This job runs on every PR title change and blocks merge if the title does not
+# conform. The actual merge-blocking is configured via branch protection rules
+# on `main` (see docs/CONTRIBUTING.md, phase 7).
+
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check title against Conventional Commits
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Allowed types — mirror CLAUDE.md §8 exactly. `style` and `revert`
+          # are deliberately omitted; this project does not use them.
+          types: |
+            feat
+            fix
+            test
+            refactor
+            chore
+            docs
+            perf
+            ci
+            build
+
+          # Scope is optional (no `requireScope`), but if present it must be
+          # lowercase and may include hyphens (e.g. `adapter/postgres`).
+          # The default config already permits this; no override needed.
+
+          # Subject pattern: must start with a lowercase letter and must not
+          # end with a period (imperative, lowercase, no trailing period).
+          subjectPattern: ^[a-z].+[^.]$
+          subjectPatternError: |
+            The PR subject "{subject}" violates the Conventional Commits style
+            this project uses:
+
+              - must start with a lowercase letter
+              - must not end with a period
+
+            Examples:
+              feat(domain): add channel value object
+              chore: add gitignore, editorconfig, license
+              fix(adapter/postgres): handle empty cursor in list query

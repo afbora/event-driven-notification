@@ -1,0 +1,82 @@
+# .github/workflows/ci.yml — backend CI pipeline.
+#
+# Three independent jobs that must all pass before a PR can merge:
+#   - lint        : golangci-lint v2 across the whole module
+#   - test-unit   : go test -race ./...
+#   - build       : compile every cmd/* binary on Linux
+#
+# Integration / e2e jobs and the SonarCloud upload land in phase 7 once those
+# test suites exist (PLAN.md tasks 7-1 through 7-6).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # Phase 1 has no external dependencies, so no `go.sum` exists yet.
+          # setup-go's cache key is built from go.sum; without it the action
+          # emits a `Restore cache failed` warning on every run. We flip this
+          # back to `true` in phase 2, once testify pulls go.sum into being.
+          cache: false
+
+      - name: Run golangci-lint
+        # @v9 is the current major; @v6 and earlier ship a golangci-lint v1
+        # binary by default, which cannot parse our v2 config schema
+        # (`version: "2"`, `linters.default`, `formatters`, etc.).
+        # @v7+ supports v2 only; `version:` must be explicit.
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+          args: --timeout=5m
+
+  test-unit:
+    name: Unit tests (race detector)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
+
+      - name: Run tests
+        run: go test -race ./...
+
+  build:
+    name: Build all binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
+
+      - name: Compile cmd/*
+        # `./cmd/...` compiles every main package under cmd/ without dropping
+        # binaries on disk — the goal here is a clean compile, not an artefact.
+        run: go build -trimpath ./cmd/...
