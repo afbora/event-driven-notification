@@ -1,0 +1,68 @@
+openapi: 3.0.3
+
+info:
+  title: Notification System API
+  version: 0.1.0
+  description: |
+    Event-driven notification system for SMS, Email, and Push channels.
+
+    **Phase 1 skeleton.** Only the health endpoint is defined here. The full
+    surface — notifications, batches, templates, cancellation, trace, metrics,
+    WebSocket upgrade — lands in phase 4 per `PLAN.md`. This file is the
+    spec-first source of truth: handler interfaces in `internal/adapters/http`
+    are generated from it via `oapi-codegen`.
+  contact:
+    name: Ahmet Bora
+    url: https://github.com/afbora/event-driven-notification
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development (`docker compose up`).
+
+tags:
+  - name: Meta
+    description: Health, version, and process-level checks.
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe.
+      description: |
+        Returns `200 OK` if the process is up and responding. Does **not**
+        verify database or queue connectivity — a future `/healthz/ready`
+        endpoint (phase 4) covers that.
+      operationId: getHealthz
+      tags: [Meta]
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: Process is up.
+                  value:
+                    status: ok
+                    version: 0.1.0
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: Process health status.
+          enum: [ok, degraded]
+          example: ok
+        version:
+          type: string
+          description: Application version (semver).
+          example: 0.1.0
