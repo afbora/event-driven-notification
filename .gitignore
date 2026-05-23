@@ -1,0 +1,66 @@
+# --- Go build artifacts ---
+# Compiled binaries land here; we ship via the Docker image, never via the repo.
+/bin/
+/dist/
+/build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# --- Test & coverage outputs ---
+*.test
+*.out
+coverage.out
+coverage.html
+*.coverprofile
+profile.cov
+
+# --- Go workspace files ---
+# Local-only; never committed for a single-module repo.
+go.work
+go.work.sum
+
+# --- Vendored dependencies ---
+# We rely on the module proxy + go.sum; no vendor/ in this project.
+vendor/
+
+# --- `air` hot-reload artifacts ---
+# Created by the dev hot-reload tool used in docker-compose for api/worker/reconciler.
+tmp/
+.air.toml.local
+
+# --- Environment files ---
+# ADR-0010 / CLAUDE.md §2.7: this project deliberately has NO .env file.
+# These patterns exist defensively so a future contributor cannot accidentally commit one.
+.env
+.env.*
+!.env.example.forbidden
+
+# --- IDE / editor noise ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Logs & local runtime data ---
+*.log
+logs/
+
+# --- Docker / local infra leftovers ---
+# Compose creates these when volumes are bind-mounted to the host (rare here, but safe).
+data/
+.docker/
+
+# --- Generated documentation artifacts ---
+# OpenAPI codegen / sqlc output is committed; nothing to ignore here yet. Keep this block
+# empty so future generated paths are added with a comment explaining why.
+
+# --- macOS / Windows / Linux misc ---
+.AppleDouble
+.LSOverride
+desktop.ini
