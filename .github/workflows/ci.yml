@@ -31,14 +31,20 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # Phase 1 has no external dependencies, so no `go.sum` exists yet.
+          # setup-go's cache key is built from go.sum; without it the action
+          # emits a `Restore cache failed` warning on every run. We flip this
+          # back to `true` in phase 2, once testify pulls go.sum into being.
+          cache: false
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # @v9 is the current major; @v6 and earlier ship a golangci-lint v1
+        # binary by default, which cannot parse our v2 config schema
+        # (`version: "2"`, `linters.default`, `formatters`, etc.).
+        # @v7+ supports v2 only; `version:` must be explicit.
+        uses: golangci/golangci-lint-action@v9
         with:
-          # Pinning is omitted on purpose: golangci-lint-action@v6 ships with a
-          # tested-against version of golangci-lint v2.x. Override here only if
-          # a future patch breaks the build.
+          version: v2.12
           args: --timeout=5m
 
   test-unit:
@@ -52,7 +58,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
 
       - name: Run tests
         run: go test -race ./...
@@ -68,7 +74,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
 
       - name: Compile cmd/*
         # `./cmd/...` compiles every main package under cmd/ without dropping
