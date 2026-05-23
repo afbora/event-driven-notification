@@ -1,0 +1,39 @@
+# .dockerignore — keep the build context minimal and reproducible.
+# Anything excluded here saves time on `docker build` and shrinks the layer
+# that holds source code.
+
+# --- Git metadata (large; never needed inside the image) ---
+.git/
+.github/
+.gitignore
+
+# --- Claude Code project metadata (local developer state) ---
+.claude/
+
+# --- Build artefacts and test outputs from local runs ---
+bin/
+tmp/
+*.test
+*.out
+coverage.out
+coverage.html
+*.coverprofile
+
+# --- Editor / IDE noise ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Documentation and project meta (runtime image doesn't need these) ---
+docs/
+*.md
+LICENSE
+Makefile
+.editorconfig
+.golangci.yml
+
+# --- This file itself ---
+.dockerignore
