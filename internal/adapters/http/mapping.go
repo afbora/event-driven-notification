@@ -173,6 +173,9 @@ func fromAPICreateNotificationRequest(body *api.CreateNotificationRequest, param
 		s := body.TemplateId.String()
 		in.TemplateID = &s
 	}
+	if body.TemplateVariables != nil {
+		in.TemplateVariables = *body.TemplateVariables
+	}
 
 	if params.IdempotencyKey != nil {
 		in.IdempotencyKey = *params.IdempotencyKey

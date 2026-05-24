@@ -96,7 +96,7 @@ func run() error {
 	inboundLimiter := redisadapter.NewOutboundRateLimiter(redis, cfg.InboundRateLimit, cfg.InboundRateWindow)
 
 	// --- application use cases -----------------------------------------
-	createNotif := application.NewCreateNotification(notifRepo, logRepo, asynqQueue, idGen, wallClock)
+	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, asynqQueue, idGen, wallClock)
 	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, asynqQueue, idGen, wallClock)
 	getNotif := application.NewGetNotification(notifRepo)
 	listNotifs := application.NewListNotifications(notifRepo)

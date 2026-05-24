@@ -151,7 +151,7 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 	idGen := id.New()
 	wallClock := clock.New()
 
-	createNotif := application.NewCreateNotification(notifRepo, logRepo, queue, idGen, wallClock)
+	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, queue, idGen, wallClock)
 	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, wallClock)
 	getNotif := application.NewGetNotification(notifRepo)
 	listNotifs := application.NewListNotifications(notifRepo)
