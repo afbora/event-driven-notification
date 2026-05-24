@@ -2,7 +2,7 @@
 #
 # Multi-stage build for the notification system.
 #
-#   builder  -> golang:1.23-alpine; compiles every cmd/* binary statically.
+#   builder  -> golang:1.26-alpine; compiles every cmd/* binary statically.
 #   runtime  -> gcr.io/distroless/static-debian12:nonroot; no shell, no apt,
 #               runs as uid 65532. The same image hosts all four binaries
 #               (api, worker, reconciler, migrate); pick the active one by
@@ -11,7 +11,7 @@
 #                 docker run --rm myimage migrate
 #               The default is `api`.
 
-ARG GO_VERSION=1.23
+ARG GO_VERSION=1.26
 
 # --- Stage 1: builder -------------------------------------------------------
 

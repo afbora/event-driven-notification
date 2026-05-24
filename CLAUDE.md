@@ -283,7 +283,7 @@ The system follows **Hexagonal Architecture (Ports & Adapters)**. Three concentr
 
 Every choice below has a one-line justification. If you (Claude Code) would choose differently, **ask first** before substituting.
 
-### Backend (Go 1.23)
+### Backend (Go 1.26)
 
 | Component | Choice | Why |
 |---|---|---|
