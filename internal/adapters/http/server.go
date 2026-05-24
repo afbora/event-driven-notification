@@ -19,6 +19,11 @@ type CreateNotificationExecutor func(ctx context.Context, in application.CreateN
 // (*application.CreateBatch).Execute; tests pass a closure.
 type CreateBatchExecutor func(ctx context.Context, in application.CreateBatchInput) (*domain.Batch, error)
 
+// GetNotificationExecutor is the slim contract for GET
+// /api/v1/notifications/{id}. Production wires
+// (*application.GetNotification).Execute; tests pass a closure.
+type GetNotificationExecutor func(ctx context.Context, in application.GetNotificationInput) (*domain.Notification, error)
+
 // ServerOptions bundles the per-operation executors the Server needs.
 // Each operation has its own slot so partial wiring is legal — an
 // operation without an executor falls through to the embedded
@@ -27,6 +32,7 @@ type CreateBatchExecutor func(ctx context.Context, in application.CreateBatchInp
 type ServerOptions struct {
 	CreateNotification CreateNotificationExecutor
 	CreateBatch        CreateBatchExecutor
+	GetNotification    GetNotificationExecutor
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
@@ -42,6 +48,7 @@ type Server struct {
 
 	createNotification CreateNotificationExecutor
 	createBatch        CreateBatchExecutor
+	getNotification    GetNotificationExecutor
 }
 
 // NewServer wires the executors carried by opts into a Server. The
@@ -51,5 +58,6 @@ func NewServer(opts ServerOptions) *Server {
 	return &Server{
 		createNotification: opts.CreateNotification,
 		createBatch:        opts.CreateBatch,
+		getNotification:    opts.GetNotification,
 	}
 }
