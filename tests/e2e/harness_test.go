@@ -74,6 +74,24 @@ type Harness struct {
 	Hub       *wsadapter.Hub
 }
 
+// HarnessOption tunes a Harness at construction time. Used by tests
+// that need to override a default — most often the inbound rate
+// limit, which the suite-wide default sets very high so polling tests
+// do not trip it.
+type HarnessOption func(*harnessConfig)
+
+type harnessConfig struct {
+	inboundRateLimit int
+}
+
+// WithInboundRateLimit overrides the harness's default inbound rate
+// limit (100000 req/min) with the supplied limit per minute. The
+// dedicated rate-limit e2e test (PLAN phase 5 task 6) uses this to
+// verify the production 60 req/min cap end-to-end.
+func WithInboundRateLimit(limit int) HarnessOption {
+	return func(c *harnessConfig) { c.inboundRateLimit = limit }
+}
+
 // NewHarness brings up the full stack. The supplied ctx is used for
 // container startup; the harness itself does not adopt it for the
 // lifetime of the HTTP server. Tests pass a generous timeout (60-90s)
@@ -82,8 +100,13 @@ type Harness struct {
 // Cleanup is registered via t.Cleanup so callers do not have to
 // remember to defer anything — the testcontainer teardown happens
 // even when the test fails.
-func NewHarness(ctx context.Context, t *testing.T) *Harness {
+func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harness {
 	t.Helper()
+
+	cfg := harnessConfig{inboundRateLimit: 100000}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 
 	pool, pgCleanup := startPostgres(ctx, t)
 	redisClient, redisAddr, redisCleanup := startRedis(ctx, t)
@@ -98,12 +121,12 @@ func NewHarness(ctx context.Context, t *testing.T) *Harness {
 	logRepo := pgadapter.NewNotificationLogRepository(pool)
 
 	idempStore := redisadapter.NewIdempotencyStore(redisClient)
-	// Inbound limiter is deliberately set well above the production
-	// 60 req/min so a polling test (200ms cadence over 30s = 150
-	// requests) does not trip the limiter. The dedicated rate-limit
-	// e2e test (PLAN phase 5 task 6) builds its own harness with the
-	// production cap to assert the 429 behavior end-to-end.
-	inboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 100000, time.Minute)
+	// Inbound limiter is deliberately high by default so polling
+	// tests (200ms cadence over 30s = 150 requests) do not trip it.
+	// The dedicated rate-limit e2e test (PLAN phase 5 task 6) lowers
+	// the cap via WithInboundRateLimit to assert the 429 behavior
+	// end-to-end.
+	inboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, cfg.inboundRateLimit, time.Minute)
 	outboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 100, time.Second)
 	broadcaster := redisadapter.NewStatusBroadcaster(redisClient)
 
