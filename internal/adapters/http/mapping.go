@@ -79,6 +79,75 @@ func toAPINotification(n *domain.Notification) (api.Notification, error) {
 	return out, nil
 }
 
+// toAPIBatch converts a domain.Batch into the wire-level shape. The
+// `withNotifications` switch controls whether the member notifications
+// are inlined — false for POST 202 responses (the spec omits them to
+// keep the payload small), true for GET responses.
+func toAPIBatch(b *domain.Batch, withNotifications bool) (api.Batch, error) {
+	id, err := uuid.Parse(string(b.ID))
+	if err != nil {
+		return api.Batch{}, fmt.Errorf("batch id is not a uuid: %w", err)
+	}
+
+	out := api.Batch{
+		Id:        id,
+		Size:      len(b.Notifications),
+		CreatedAt: b.CreatedAt,
+	}
+	if b.CorrelationID != "" {
+		cid := b.CorrelationID
+		out.CorrelationId = &cid
+	}
+
+	if withNotifications && len(b.Notifications) > 0 {
+		items := make([]api.Notification, 0, len(b.Notifications))
+		for _, n := range b.Notifications {
+			item, ierr := toAPINotification(n)
+			if ierr != nil {
+				return api.Batch{}, fmt.Errorf("map batch member: %w", ierr)
+			}
+			items = append(items, item)
+		}
+		out.Notifications = &items
+	}
+
+	return out, nil
+}
+
+// fromAPICreateBatchRequest maps the wire-level batch request into the
+// CreateBatch use case input. Each api.CreateNotificationRequest in
+// the array becomes a CreateBatchItem; the optional X-Correlation-ID
+// header drives the shared correlation id (the use case generates one
+// when absent).
+func fromAPICreateBatchRequest(body *api.CreateBatchRequest, params api.CreateBatchParams) application.CreateBatchInput {
+	in := application.CreateBatchInput{
+		Notifications: make([]application.CreateBatchItem, 0, len(body.Notifications)),
+	}
+	if params.XCorrelationID != nil {
+		in.CorrelationID = *params.XCorrelationID
+	}
+
+	for _, item := range body.Notifications {
+		batchItem := application.CreateBatchItem{
+			Channel:   string(item.Channel),
+			Recipient: item.Recipient,
+			Content:   item.Content,
+		}
+		if item.Priority != nil {
+			batchItem.Priority = string(*item.Priority)
+		} else {
+			batchItem.Priority = string(domain.PriorityNormal)
+		}
+		if item.TemplateId != nil {
+			s := item.TemplateId.String()
+			batchItem.TemplateID = &s
+		}
+		in.Notifications = append(in.Notifications, batchItem)
+	}
+
+	return in
+}
+
 // fromAPICreateNotificationRequest maps the wire-level request struct
 // into the application use case's input shape. The use case is the
 // authoritative layer for parsing channel/priority strings — this
