@@ -3,6 +3,7 @@ package asynq
 import (
 	"context"
 	"fmt"
+	"time"
 
 	hibikenasynq "github.com/hibiken/asynq"
 
@@ -43,6 +44,23 @@ func (q *Queue) Enqueue(ctx context.Context, notificationID domain.NotificationI
 	}
 	if _, err := q.client.EnqueueContext(ctx, task, opts...); err != nil {
 		return fmt.Errorf("enqueue notification %s: %w", notificationID, err)
+	}
+	return nil
+}
+
+// EnqueueScheduled defers a notification until `at`. asynq holds the task
+// in its scheduled set and only moves it into the priority queue once the
+// time arrives. Idempotency keys are not used here because scheduled tasks
+// are typically created by a deliberate API call rather than a retry — the
+// caller is in charge of de-duplication.
+func (q *Queue) EnqueueScheduled(ctx context.Context, notificationID domain.NotificationID, priority domain.Priority, at time.Time) error {
+	task, opts, err := NewProcessNotificationTask(notificationID, priority, "")
+	if err != nil {
+		return fmt.Errorf("build scheduled task: %w", err)
+	}
+	opts = append(opts, hibikenasynq.ProcessAt(at))
+	if _, err := q.client.EnqueueContext(ctx, task, opts...); err != nil {
+		return fmt.Errorf("enqueue scheduled notification %s: %w", notificationID, err)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	hibikenasynq "github.com/hibiken/asynq"
 	"github.com/stretchr/testify/require"
@@ -70,6 +71,37 @@ func TestQueue_Enqueue_RoutingByPriority(t *testing.T) {
 		require.NoError(t, err)
 		require.Lenf(t, infos, tc.want, "%s queue", tc.queue)
 	}
+}
+
+// TestQueue_EnqueueScheduled: a future-delivery task lands in asynq's
+// scheduled set, not in the pending queue. asynq promotes it to pending
+// when `at` arrives — but for the integration test we only assert it
+// starts in the scheduled set so the test does not depend on time elapsing.
+func TestQueue_EnqueueScheduled(t *testing.T) {
+	redisOpt, cleanup := setupRedisForAsynq(t)
+	defer cleanup()
+
+	q := asynqadapter.NewQueue(redisOpt)
+	defer func() { _ = q.Close() }()
+
+	inspector := hibikenasynq.NewInspector(redisOpt)
+	defer func() { _ = inspector.Close() }()
+	awaitInspector(t, inspector)
+
+	notifID := domain.NotificationID("01940000-0000-7000-8000-000000000031")
+	at := time.Now().Add(1 * time.Hour)
+	require.NoError(t, q.EnqueueScheduled(context.Background(), notifID, domain.PriorityNormal, at))
+
+	// Not pending — still waiting on the schedule.
+	pending, err := inspector.ListPendingTasks("normal")
+	require.NoError(t, err)
+	require.Empty(t, pending, "scheduled task should not be pending yet")
+
+	// Lives in the scheduled set.
+	scheduled, err := inspector.ListScheduledTasks("normal")
+	require.NoError(t, err)
+	require.Len(t, scheduled, 1)
+	require.Equal(t, asynqadapter.TypeProcessNotification, scheduled[0].Type)
 }
 
 // TestQueue_Enqueue_IdempotencyKeyDeduplicates: enqueueing the same task id
