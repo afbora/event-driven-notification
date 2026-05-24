@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -13,14 +12,9 @@ import (
 // (CLAUDE.md §3.3: no third-party dependencies in domain).
 type NotificationID string
 
-// Sentinel errors for Notification construction and lifecycle.
-var (
-	ErrInvalidNotificationID = errors.New("invalid notification id")
-	ErrInvalidCorrelationID  = errors.New("invalid correlation id")
-	ErrInvalidRecipient      = errors.New("invalid recipient")
-	ErrInvalidContent        = errors.New("invalid content")
-	ErrInvalidTransition     = errors.New("invalid status transition")
-)
+// Sentinel errors used by this file (ErrInvalidNotificationID, ErrInvalidCorrelationID,
+// ErrInvalidRecipient, ErrInvalidContent, ErrInvalidTransition) are declared
+// in errors.go alongside the typed error variants.
 
 // contentLimits is the channel-specific maximum content length (CLAUDE.md §11,
 // matches the reference implementation).

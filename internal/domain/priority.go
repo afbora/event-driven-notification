@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // Priority bucketises notifications for the queue. The three values map to
 // asynq queue weights at the adapter layer (high=6, default=3, low=1, per
@@ -20,14 +17,10 @@ const (
 	PriorityHigh   Priority = "high"
 )
 
-// ErrInvalidPriority is returned by NewPriority when the input does not name
-// a known priority. Detect with errors.Is so the comparison survives future
-// wrapping.
-var ErrInvalidPriority = errors.New("invalid priority")
-
 // NewPriority parses and validates a priority string. Input is case-insensitive
 // and surrounding whitespace is trimmed; the returned Priority is always one
-// of the package-level constants. Anything else returns ErrInvalidPriority.
+// of the package-level constants. Anything else returns ErrInvalidPriority
+// (declared in errors.go).
 func NewPriority(s string) (Priority, error) {
 	normalised := strings.ToLower(strings.TrimSpace(s))
 	switch Priority(normalised) {

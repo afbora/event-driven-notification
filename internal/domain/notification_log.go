@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"errors"
 	"strings"
 	"time"
 )
@@ -30,16 +29,10 @@ const (
 	LogEventCancelled  LogEvent = "cancelled"
 )
 
-// Sentinel errors for NotificationLog construction.
-var (
-	ErrInvalidLogID    = errors.New("invalid log id")
-	ErrInvalidLogEvent = errors.New("invalid log event")
-)
-
 // NewLogEvent parses and validates a log event string. Input is
 // case-insensitive and surrounding whitespace is trimmed; the returned
 // LogEvent is always one of the package-level constants. Anything else
-// returns ErrInvalidLogEvent.
+// returns ErrInvalidLogEvent (declared in errors.go).
 func NewLogEvent(s string) (LogEvent, error) {
 	normalised := strings.ToLower(strings.TrimSpace(s))
 	candidate := LogEvent(normalised)

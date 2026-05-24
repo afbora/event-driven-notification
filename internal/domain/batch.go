@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"errors"
-	"time"
-)
+import "time"
 
 // BatchID is the unique identifier for a batch — a group of 1 to 1000
 // notifications created in a single API call. The string form is the UUID v7
@@ -19,12 +16,8 @@ const (
 	MaxBatchSize = 1000
 )
 
-// Sentinel errors for Batch construction.
-var (
-	ErrInvalidBatchID               = errors.New("invalid batch id")
-	ErrInvalidBatchSize             = errors.New("invalid batch size")
-	ErrBatchInconsistentCorrelation = errors.New("batch notifications have inconsistent correlation id")
-)
+// Sentinel errors used by this file (ErrInvalidBatchID, ErrInvalidBatchSize,
+// ErrBatchInconsistentCorrelation) are declared in errors.go.
 
 // Batch is a group of notifications created together. Every notification in
 // a batch shares the batch's correlation ID (CLAUDE.md §2.3) so a single

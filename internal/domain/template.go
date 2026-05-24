@@ -2,7 +2,6 @@ package domain
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"text/template"
 	"time"
@@ -12,13 +11,8 @@ import (
 // is the UUID v7 representation, parallel to NotificationID and BatchID.
 type TemplateID string
 
-// Sentinel errors for Template construction and rendering.
-var (
-	ErrInvalidTemplateID    = errors.New("invalid template id")
-	ErrInvalidTemplateName  = errors.New("invalid template name")
-	ErrInvalidTemplateBody  = errors.New("invalid template body")
-	ErrTemplateRenderFailed = errors.New("template render failed")
-)
+// Sentinel errors used by this file (ErrInvalidTemplateID, ErrInvalidTemplateName,
+// ErrInvalidTemplateBody, ErrTemplateRenderFailed) are declared in errors.go.
 
 // Template represents a reusable message body with variable placeholders.
 // The body uses Go's text/template syntax — e.g. "Hello {{.Name}}, your

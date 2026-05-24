@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // Status represents the lifecycle stage of a notification. The set is fixed
 // (see the package-level constants) and transitions follow a finite-state
@@ -31,10 +28,6 @@ const (
 	StatusCancelled  Status = "cancelled"
 )
 
-// ErrInvalidStatus is returned by NewStatus when the input does not name a
-// known status. Detect with errors.Is so the comparison survives wrapping.
-var ErrInvalidStatus = errors.New("invalid status")
-
 // validTransitions encodes the FSM as an adjacency list. Statuses missing
 // from this map (delivered, failed, cancelled) are terminal: no outgoing
 // edges. Adding a new status requires updating both this map and the IsValid
@@ -48,7 +41,8 @@ var validTransitions = map[Status][]Status{
 
 // NewStatus parses and validates a status string. Input is case-insensitive
 // and surrounding whitespace is trimmed; the returned Status is always one
-// of the package-level constants. Anything else returns ErrInvalidStatus.
+// of the package-level constants. Anything else returns ErrInvalidStatus
+// (declared in errors.go).
 func NewStatus(s string) (Status, error) {
 	normalised := strings.ToLower(strings.TrimSpace(s))
 	candidate := Status(normalised)

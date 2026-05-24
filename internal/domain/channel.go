@@ -5,10 +5,7 @@
 // rationale.
 package domain
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // Channel identifies the medium through which a notification is delivered.
 // The zero value is invalid; callers obtain valid Channels by calling
@@ -25,14 +22,10 @@ const (
 	ChannelPush  Channel = "push"
 )
 
-// ErrInvalidChannel is returned by NewChannel when the input does not name a
-// known channel. Callers detect it with errors.Is so the comparison survives
-// future error wrapping.
-var ErrInvalidChannel = errors.New("invalid channel")
-
 // NewChannel parses and validates a channel string. Input is case-insensitive
 // and surrounding whitespace is trimmed; the returned Channel is always one of
-// the package-level constants. Anything else returns ErrInvalidChannel.
+// the package-level constants. Anything else returns ErrInvalidChannel
+// (declared in errors.go).
 func NewChannel(s string) (Channel, error) {
 	normalised := strings.ToLower(strings.TrimSpace(s))
 	switch Channel(normalised) {
