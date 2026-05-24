@@ -10,7 +10,6 @@ package application_test
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -18,7 +17,21 @@ import (
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
-var errFakeNotImplemented = errors.New("fake: method not used by this test")
+// copyNotifications returns shallow copies of every notification in the
+// slice so caller mutations do not leak back into the fake's internal
+// store. Mirrors what a real repository would do when it scans rows out of
+// the database into fresh structs.
+func copyNotifications(in []*domain.Notification) []*domain.Notification {
+	out := make([]*domain.Notification, len(in))
+	for i, n := range in {
+		if n == nil {
+			continue
+		}
+		copied := *n
+		out[i] = &copied
+	}
+	return out
+}
 
 // --- ID generator ---------------------------------------------------------
 
@@ -204,19 +217,19 @@ func (r *fakeNotificationRepo) List(_ context.Context, filter ports.Notification
 func (r *fakeNotificationRepo) FindOrphanedPending(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.orphanedPending, nil
+	return copyNotifications(r.orphanedPending), nil
 }
 
 func (r *fakeNotificationRepo) FindStuckProcessing(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.stuckProcessing, nil
+	return copyNotifications(r.stuckProcessing), nil
 }
 
 func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.overdueRetrying, nil
+	return copyNotifications(r.overdueRetrying), nil
 }
 
 // --- BatchRepository -----------------------------------------------------
