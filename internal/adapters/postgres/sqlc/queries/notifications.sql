@@ -22,6 +22,12 @@ SELECT *
 FROM notifications
 WHERE id = $1;
 
+-- name: ListNotificationsByBatch :many
+SELECT *
+FROM notifications
+WHERE batch_id = $1
+ORDER BY created_at;
+
 -- ClaimForProcessing atomically moves a notification from queued/retrying
 -- into processing and increments the attempts counter. Returning zero rows
 -- means another worker (or a redelivery) won the race; the repository

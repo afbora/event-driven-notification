@@ -387,6 +387,50 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 	return items, nil
 }
 
+const listNotificationsByBatch = `-- name: ListNotificationsByBatch :many
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM notifications
+WHERE batch_id = $1
+ORDER BY created_at
+`
+
+func (q *Queries) ListNotificationsByBatch(ctx context.Context, batchID pgtype.UUID) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, listNotificationsByBatch, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateNotificationStatus = `-- name: UpdateNotificationStatus :execrows
 
 UPDATE notifications
