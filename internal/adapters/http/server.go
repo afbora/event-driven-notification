@@ -59,6 +59,12 @@ type ReplaceTemplateExecutor func(ctx context.Context, in application.ReplaceTem
 // DeleteTemplateExecutor is the slim contract for DELETE /api/v1/templates/{id}.
 type DeleteTemplateExecutor func(ctx context.Context, in application.DeleteTemplateInput) error
 
+// ReadinessCheck verifies that one downstream dependency is reachable.
+// /healthz/ready invokes every configured check in turn; any error
+// flips the response to 503. Production wires one check per critical
+// dependency (Postgres ping, Redis ping); tests inject closures.
+type ReadinessCheck func(ctx context.Context) error
+
 // ServerOptions bundles the per-operation executors the Server needs.
 // Each operation has its own slot so partial wiring is legal — an
 // operation without an executor falls through to the embedded
@@ -78,6 +84,11 @@ type ServerOptions struct {
 	ListTemplates   ListTemplatesExecutor
 	ReplaceTemplate ReplaceTemplateExecutor
 	DeleteTemplate  DeleteTemplateExecutor
+
+	// ReadinessChecks runs against /healthz/ready. Empty means the
+	// API has no downstream dependencies to verify and reports ready
+	// the moment it can accept HTTP.
+	ReadinessChecks []ReadinessCheck
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
@@ -104,6 +115,8 @@ type Server struct {
 	listTemplates   ListTemplatesExecutor
 	replaceTemplate ReplaceTemplateExecutor
 	deleteTemplate  DeleteTemplateExecutor
+
+	readinessChecks []ReadinessCheck
 }
 
 // NewServer wires the executors carried by opts into a Server. The
@@ -123,5 +136,6 @@ func NewServer(opts ServerOptions) *Server {
 		listTemplates:        opts.ListTemplates,
 		replaceTemplate:      opts.ReplaceTemplate,
 		deleteTemplate:       opts.DeleteTemplate,
+		readinessChecks:      opts.ReadinessChecks,
 	}
 }
