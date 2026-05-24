@@ -12,6 +12,7 @@
 # --- Test & coverage outputs ---
 *.test
 *.out
+coverage/
 coverage.out
 coverage.html
 *.coverprofile

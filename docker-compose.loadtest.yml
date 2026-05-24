@@ -1,0 +1,29 @@
+# docker-compose.loadtest.yml — k6 overlay for load testing.
+#
+# Layers on top of docker-compose.yml; use both:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+#     run --rm k6 run /scripts/<scenario>.js
+#
+# The k6 service joins the same network as api/worker so it can hit
+# http://api:8080 directly — no host-port mapping, no public exposure.
+# Scripts are mounted read-only from tests/load/.
+
+services:
+  k6:
+    image: grafana/k6:0.54.0
+    profiles:
+      - loadtest
+    networks:
+      - notification-net
+    volumes:
+      - ./tests/load:/scripts:ro
+    environment:
+      BASE_URL: http://api:8080
+      # Default to a short summary so a developer running locally
+      # without a metrics stack still sees per-scenario results.
+      K6_SUMMARY_TREND_STATS: "min,med,avg,p(95),p(99),max"
+
+networks:
+  notification-net:
+    external: false

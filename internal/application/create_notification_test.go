@@ -26,10 +26,11 @@ func newCreateNotification(t *testing.T) (
 	t.Helper()
 	repo := newFakeNotificationRepo()
 	logRepo := newFakeNotificationLogRepo()
+	tmplRepo := newFakeTemplateRepo()
 	queue := newFakeQueue()
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
-	uc := application.NewCreateNotification(repo, logRepo, queue, idGen, clock)
+	uc := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock)
 	return uc, repo, logRepo, queue, idGen
 }
 
@@ -47,9 +48,11 @@ func TestCreateNotification_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Notification returned in initial state.
+	// CreateNotification persists pending, enqueues, then advances
+	// pending → queued so the worker's atomic claim accepts the
+	// notification.
 	require.Equal(t, domain.NotificationID("01NOTIF01"), n.ID)
-	require.Equal(t, domain.StatusPending, n.Status)
+	require.Equal(t, domain.StatusQueued, n.Status)
 	require.Equal(t, domain.ChannelSMS, n.Channel)
 	require.Equal(t, "01HXYZINBOUNDCORR0000000000", n.CorrelationID)
 	require.True(t, n.CreatedAt.Equal(fixedAppNow))
@@ -57,9 +60,11 @@ func TestCreateNotification_HappyPath(t *testing.T) {
 	// Persisted exactly once.
 	require.Len(t, repo.store, 1)
 
-	// notification_logs entry written with event=created.
-	require.Len(t, logRepo.entries, 1)
+	// Two notification_logs entries: "created" before the enqueue and
+	// "queued" after the pending → queued transition.
+	require.Len(t, logRepo.entries, 2)
 	require.Equal(t, domain.LogEventCreated, logRepo.entries[0].Event)
+	require.Equal(t, domain.LogEventQueued, logRepo.entries[1].Event)
 	require.Equal(t, n.ID, logRepo.entries[0].NotificationID)
 	require.Equal(t, n.CorrelationID, logRepo.entries[0].CorrelationID)
 
