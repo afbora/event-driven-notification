@@ -1,0 +1,38 @@
+# sqlc.yaml — code generation config for the postgres adapter.
+#
+# Schema files (db/migrations) define the column types sqlc reads; query
+# files (internal/adapters/postgres/sqlc/queries) carry one annotated query
+# per repository method. `make sqlc` regenerates the Go bindings into
+# internal/adapters/postgres/sqlc/. The output is committed (CLAUDE.md §9).
+#
+# v2 schema (sqlc 1.20+, current line is 1.27+).
+
+version: "2"
+
+sql:
+  - schema: db/migrations
+    queries: internal/adapters/postgres/sqlc/queries
+    engine: postgresql
+    gen:
+      go:
+        package: sqlc
+        out: internal/adapters/postgres/sqlc
+
+        # Use the pgx/v5 driver — same one the application opens its
+        # connection pool with. ADR-0002.
+        sql_package: pgx/v5
+
+        # Generated style:
+        #   - empty SELECT results → []T{}, not nil. Avoids nil checks at
+        #     the repository boundary.
+        #   - no Querier interface — repositories declare their own
+        #     port-shaped interface in internal/ports/.
+        #   - no JSON tags — generated structs are DB rows, transport DTOs
+        #     live in the http adapter.
+        #   - nullable columns → *T so the repository can distinguish
+        #     "set to zero" from "not set".
+        emit_empty_slices: true
+        emit_interface: false
+        emit_exact_table_names: false
+        emit_json_tags: false
+        emit_pointers_for_null_types: true
