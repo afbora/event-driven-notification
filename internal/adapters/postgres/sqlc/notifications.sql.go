@@ -11,6 +11,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimForProcessing = `-- name: ClaimForProcessing :one
+
+UPDATE notifications
+SET    status     = 'processing',
+       updated_at = $2,
+       attempts   = attempts + 1
+WHERE  id = $1
+  AND  status IN ('queued', 'retrying')
+RETURNING id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+`
+
+type ClaimForProcessingParams struct {
+	ID        pgtype.UUID
+	UpdatedAt pgtype.Timestamptz
+}
+
+// ClaimForProcessing atomically moves a notification from queued/retrying
+// into processing and increments the attempts counter. Returning zero rows
+// means another worker (or a redelivery) won the race; the repository
+// surfaces this as ports.ErrAlreadyClaimed. See CLAUDE.md §3.10 / ADR-0009.
+func (q *Queries) ClaimForProcessing(ctx context.Context, arg ClaimForProcessingParams) (Notification, error) {
+	row := q.db.QueryRow(ctx, claimForProcessing, arg.ID, arg.UpdatedAt)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.BatchID,
+		&i.IdempotencyKey,
+		&i.CorrelationID,
+		&i.Channel,
+		&i.Priority,
+		&i.Recipient,
+		&i.Content,
+		&i.Status,
+		&i.Attempts,
+		&i.LastError,
+		&i.NextRetryAt,
+		&i.ScheduledAt,
+		&i.TemplateID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createNotification = `-- name: CreateNotification :exec
 
 INSERT INTO notifications (

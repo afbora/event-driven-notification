@@ -21,3 +21,17 @@ INSERT INTO notifications (
 SELECT *
 FROM notifications
 WHERE id = $1;
+
+-- ClaimForProcessing atomically moves a notification from queued/retrying
+-- into processing and increments the attempts counter. Returning zero rows
+-- means another worker (or a redelivery) won the race; the repository
+-- surfaces this as ports.ErrAlreadyClaimed. See CLAUDE.md §3.10 / ADR-0009.
+
+-- name: ClaimForProcessing :one
+UPDATE notifications
+SET    status     = 'processing',
+       updated_at = $2,
+       attempts   = attempts + 1
+WHERE  id = $1
+  AND  status IN ('queued', 'retrying')
+RETURNING *;

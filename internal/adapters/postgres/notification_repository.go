@@ -47,6 +47,47 @@ func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notificat
 	return nil
 }
 
+// ClaimForProcessing atomically moves the notification from queued/retrying
+// into processing, increments the attempts counter, and returns the claimed
+// entity (with the new status and updated_at). The flow distinguishes three
+// outcomes for the caller:
+//
+//   - Row missing entirely: returns ports.ErrNotFound (a bug — queue payload
+//     references a notification that does not exist).
+//   - Row present but unclaimable (status not in queued/retrying): returns
+//     ports.ErrAlreadyClaimed (benign race; worker logs and exits cleanly).
+//   - Row claimed successfully: returned with status=processing.
+//
+// The two-query pattern (Get, then UPDATE ... RETURNING) is deliberate so
+// the caller can branch on the ErrNotFound case. The window between the two
+// queries is harmless: if another worker claims the row in that window, the
+// UPDATE returns zero rows and we surface ErrAlreadyClaimed.
+func (r *NotificationRepository) ClaimForProcessing(ctx context.Context, id domain.NotificationID, now time.Time) (*domain.Notification, error) {
+	pgID, err := parseUUID(string(id))
+	if err != nil {
+		return nil, fmt.Errorf("parse notification id %q: %w", id, err)
+	}
+
+	if _, err := r.q.GetNotification(ctx, pgID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: notification %s", ports.ErrNotFound, id)
+		}
+		return nil, fmt.Errorf("get notification %s: %w", id, err)
+	}
+
+	row, err := r.q.ClaimForProcessing(ctx, sqlc.ClaimForProcessingParams{
+		ID:        pgID,
+		UpdatedAt: timeToTimestamptz(now),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: notification %s", ports.ErrAlreadyClaimed, id)
+		}
+		return nil, fmt.Errorf("claim notification %s: %w", id, err)
+	}
+	return notificationFromRow(row)
+}
+
 // Get returns the notification with the given id, or ports.ErrNotFound when
 // the row does not exist. ID strings that do not parse as a UUID are
 // reported as errors before the database is consulted.
