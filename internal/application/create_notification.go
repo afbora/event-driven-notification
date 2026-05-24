@@ -121,6 +121,32 @@ func (uc *CreateNotification) Execute(ctx context.Context, in CreateNotification
 		return nil, fmt.Errorf("enqueue notification: %w", err)
 	}
 
+	// Move pending → queued so the worker's atomic claim
+	// (queued|retrying → processing) accepts the notification.
+	// If the status update fails the notification remains in pending;
+	// the reconciler's orphaned-pending sweep (ADR-0011) puts it back
+	// into circulation. This trades a small extra latency on the rare
+	// failure path for a strictly safer transition order.
+	if err := n.MarkQueued(now); err != nil {
+		return nil, fmt.Errorf("mark queued: %w", err)
+	}
+	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusPending); err != nil {
+		return nil, fmt.Errorf("persist queued status: %w", err)
+	}
+
+	queuedLog, err := domain.NewNotificationLog(domain.NewNotificationLogInput{
+		ID:             uc.idGen.NewLogID(),
+		NotificationID: n.ID,
+		CorrelationID:  n.CorrelationID,
+		Event:          domain.LogEventQueued,
+	}, now)
+	if err != nil {
+		return nil, fmt.Errorf("build queued log entry: %w", err)
+	}
+	if err := uc.logRepo.Append(ctx, queuedLog); err != nil {
+		return nil, fmt.Errorf("append queued log entry: %w", err)
+	}
+
 	return n, nil
 }
 

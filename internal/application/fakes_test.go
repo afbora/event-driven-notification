@@ -134,7 +134,11 @@ func (r *fakeNotificationRepo) Create(_ context.Context, n *domain.Notification)
 	if r.createErr != nil {
 		return r.createErr
 	}
-	r.store[n.ID] = n
+	// Shallow-copy so subsequent mutations of n in the caller (e.g.
+	// MarkQueued) do not retroactively change the value stored in the
+	// fake — real PG would persist the row's data, not a live pointer.
+	copied := *n
+	r.store[n.ID] = &copied
 	return nil
 }
 
