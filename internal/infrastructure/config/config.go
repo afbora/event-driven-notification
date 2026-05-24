@@ -40,6 +40,9 @@ type Config struct {
 
 	// --- reconciler -------------------------------------------------
 	ReconcilerInterval time.Duration
+
+	// --- tracing ----------------------------------------------------
+	OTLPEndpoint string // empty → no-op tracer
 }
 
 // Load reads every env var defined above with sensible defaults and
@@ -55,6 +58,7 @@ func Load() (Config, error) {
 		HTTPAddr:             getString("HTTP_ADDR", ":8080"),
 		WebhookProviderURL:   getString("WEBHOOK_PROVIDER_URL", ""),
 		WebhookProviderToken: getString("WEBHOOK_PROVIDER_TOKEN", ""),
+		OTLPEndpoint:         getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 
 	var err error

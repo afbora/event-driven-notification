@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	asynqadapter "github.com/afbora/event-driven-notification/internal/adapters/asynq"
 	httpadapter "github.com/afbora/event-driven-notification/internal/adapters/http"
@@ -43,6 +44,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 
 	hibikenasynq "github.com/hibiken/asynq"
 )
@@ -63,6 +65,20 @@ func run() error {
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing: no-op when OTEL_EXPORTER_OTLP_ENDPOINT is empty.
+	traceShutdown, err := tracing.Setup(rootCtx, tracing.Config{
+		ServiceName: "api",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = traceShutdown(shutCtx)
+	}()
 
 	// --- pg + redis -----------------------------------------------------
 	pool, err := pgxpool.New(rootCtx, cfg.DatabaseURL)
@@ -169,9 +185,13 @@ func run() error {
 	router.Handle("/api/v1/ws/notifications", httpadapter.NewWebSocketHandler(hub))
 	httpadapter.MountDocs(router)
 
+	// otelhttp wraps the router so every inbound request gets a
+	// span — even when the global provider is no-op the spans are
+	// cheap, so this stays on by default.
+	tracedHandler := otelhttp.NewHandler(router, "api")
 	httpServer := &nethttp.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           router,
+		Handler:           tracedHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -32,6 +32,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 )
 
 func main() {
@@ -50,6 +51,15 @@ func run() error {
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	traceShutdown, err := tracing.Setup(rootCtx, tracing.Config{
+		ServiceName: "worker",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	// --- pg + redis -----------------------------------------------------
 	pool, err := pgxpool.New(rootCtx, cfg.DatabaseURL)
