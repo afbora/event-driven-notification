@@ -78,6 +78,7 @@ sqlc: ## Regenerate sqlc bindings (config lives under internal/adapters/postgres
 
 openapi: ## Regenerate the HTTP server interface from api/openapi.yaml.
 	oapi-codegen -config api/oapi-codegen.yaml api/openapi.yaml
+	cp api/openapi.yaml internal/adapters/http/openapi.yaml.embed
 
 # --- Database migrations ---------------------------------------------------
 

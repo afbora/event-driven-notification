@@ -1,0 +1,21 @@
+meta {
+  name: Get Notification Trace
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/notifications/{{notificationId}}/trace
+  body: none
+  auth: none
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Returns every status transition the notification has recorded, oldest
+  first. The support-debug endpoint operators reach for to answer "what
+  actually happened to this notification?".
+}

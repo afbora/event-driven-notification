@@ -1,0 +1,31 @@
+meta {
+  name: Create Template
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{BASE_URL}}/api/v1/templates
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Idempotency-Key: {{idempotencyKey}}
+  X-Correlation-ID: {{correlationId}}
+}
+
+body:json {
+  {
+    "name": "welcome-sms",
+    "channel": "sms",
+    "body": "Hello {{.Name}}, welcome to our service!"
+  }
+}
+
+docs {
+  Creates a reusable template. The body is parsed at create time so syntax
+  errors surface here, not later at render time. Returns 201 with the new
+  resource and a Location header.
+}

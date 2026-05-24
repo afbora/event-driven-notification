@@ -1,0 +1,16 @@
+meta {
+  name: Healthz Live
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{BASE_URL}}/healthz/live
+  body: none
+  auth: none
+}
+
+docs {
+  Liveness probe. Returns 200 if the process is up; ignores downstream
+  state on purpose so a Redis hiccup does not restart every API replica.
+}

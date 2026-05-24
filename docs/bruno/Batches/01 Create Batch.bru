@@ -1,0 +1,33 @@
+meta {
+  name: Create Batch
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{BASE_URL}}/api/v1/notifications/batch
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Idempotency-Key: {{idempotencyKey}}
+  X-Correlation-ID: {{correlationId}}
+}
+
+body:json {
+  {
+    "notifications": [
+      { "channel": "sms",   "recipient": "+15555550001", "content": "Bulk msg 1" },
+      { "channel": "sms",   "recipient": "+15555550002", "content": "Bulk msg 2" },
+      { "channel": "email", "recipient": "alice@example.com", "content": "Hello Alice" }
+    ]
+  }
+}
+
+docs {
+  Atomically persists 1-1000 notifications under one batch id. POST 202
+  omits the member notifications from the response — fetch them via
+  GET /api/v1/notifications/batch/{id}.
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Get Batch
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/notifications/batch/{{batchId}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Fetch a batch with every member notification inlined. Unlike the POST 202
+  response, GET inlines all members — the client has explicitly asked for
+  the full picture.
+}

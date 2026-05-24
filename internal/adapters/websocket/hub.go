@@ -133,6 +133,16 @@ func (h *Hub) Broadcast(notificationID domain.NotificationID, status domain.Stat
 	}
 }
 
+// SubscriberCount returns how many distinct clients are currently
+// subscribed to the given notification id. Used by tests to confirm
+// subscribe/unsubscribe lifecycle without poking at internals; cheap
+// enough to keep available in production too (a read under RLock).
+func (h *Hub) SubscriberCount(notificationID domain.NotificationID) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.subscribers[notificationID])
+}
+
 // removeLocked deletes one (clientID, notificationID) pair from both maps.
 // The caller must already hold h.mu (the L variant — write lock).
 func (h *Hub) removeLocked(clientID string, notificationID domain.NotificationID) {

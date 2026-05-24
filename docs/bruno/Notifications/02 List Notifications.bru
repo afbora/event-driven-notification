@@ -1,0 +1,27 @@
+meta {
+  name: List Notifications
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/notifications?status=delivered&channel=sms&limit=25
+  body: none
+  auth: none
+}
+
+params:query {
+  status: delivered
+  channel: sms
+  limit: 25
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Cursor-paginated list with optional status/channel/batch_id/created_after/
+  created_before filters. Pass the response's next_cursor as ?cursor= to
+  fetch the next page.
+}
