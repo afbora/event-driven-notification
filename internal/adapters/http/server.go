@@ -34,17 +34,23 @@ type ListNotificationsExecutor func(ctx context.Context, in application.ListNoti
 // (*application.CancelNotification).Execute; tests pass a closure.
 type CancelNotificationExecutor func(ctx context.Context, in application.CancelNotificationInput) (*domain.Notification, error)
 
+// GetNotificationTraceExecutor is the slim contract for GET
+// /api/v1/notifications/{id}/trace. Production wires
+// (*application.GetNotificationTrace).Execute; tests pass a closure.
+type GetNotificationTraceExecutor func(ctx context.Context, in application.GetNotificationTraceInput) ([]*domain.NotificationLog, error)
+
 // ServerOptions bundles the per-operation executors the Server needs.
 // Each operation has its own slot so partial wiring is legal — an
 // operation without an executor falls through to the embedded
 // unimplementedServer and returns 501. Tasks 9-22 in phase 4 add the
 // remaining executors as their handlers ship.
 type ServerOptions struct {
-	CreateNotification CreateNotificationExecutor
-	CreateBatch        CreateBatchExecutor
-	GetNotification    GetNotificationExecutor
-	ListNotifications  ListNotificationsExecutor
-	CancelNotification CancelNotificationExecutor
+	CreateNotification   CreateNotificationExecutor
+	CreateBatch          CreateBatchExecutor
+	GetNotification      GetNotificationExecutor
+	ListNotifications    ListNotificationsExecutor
+	CancelNotification   CancelNotificationExecutor
+	GetNotificationTrace GetNotificationTraceExecutor
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
@@ -58,11 +64,12 @@ type ServerOptions struct {
 type Server struct {
 	unimplementedServer
 
-	createNotification CreateNotificationExecutor
-	createBatch        CreateBatchExecutor
-	getNotification    GetNotificationExecutor
-	listNotifications  ListNotificationsExecutor
-	cancelNotification CancelNotificationExecutor
+	createNotification   CreateNotificationExecutor
+	createBatch          CreateBatchExecutor
+	getNotification      GetNotificationExecutor
+	listNotifications    ListNotificationsExecutor
+	cancelNotification   CancelNotificationExecutor
+	getNotificationTrace GetNotificationTraceExecutor
 }
 
 // NewServer wires the executors carried by opts into a Server. The
@@ -70,10 +77,11 @@ type Server struct {
 // executor is nil falls through to a 501 response.
 func NewServer(opts ServerOptions) *Server {
 	return &Server{
-		createNotification: opts.CreateNotification,
-		createBatch:        opts.CreateBatch,
-		getNotification:    opts.GetNotification,
-		listNotifications:  opts.ListNotifications,
-		cancelNotification: opts.CancelNotification,
+		createNotification:   opts.CreateNotification,
+		createBatch:          opts.CreateBatch,
+		getNotification:      opts.GetNotification,
+		listNotifications:    opts.ListNotifications,
+		cancelNotification:   opts.CancelNotification,
+		getNotificationTrace: opts.GetNotificationTrace,
 	}
 }
