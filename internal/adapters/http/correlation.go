@@ -55,3 +55,14 @@ func CorrelationIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(correlationIDKey{}).(string)
 	return id
 }
+
+// ContextWithCorrelationID returns a context derived from parent that
+// carries id under the same key CorrelationIDMiddleware uses. The
+// exported helper is for non-HTTP entry points — the worker decodes a
+// correlation id from its queue payload and seeds the context before
+// invoking application code, so logs from the worker side carry the
+// same id as the originating API request. Also used by tests that
+// need to set up a request context without driving the middleware.
+func ContextWithCorrelationID(parent context.Context, id string) context.Context {
+	return context.WithValue(parent, correlationIDKey{}, id)
+}
