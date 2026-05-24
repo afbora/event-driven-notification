@@ -2,6 +2,7 @@ package asynq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,26 +11,42 @@ import (
 	"github.com/afbora/event-driven-notification/internal/domain"
 )
 
-// Queue is the asynq-backed implementation of ports.Queue. EnqueueScheduled
-// and Cancel land in subsequent tasks (PLAN.md task 26, 27); for now Enqueue
-// covers the immediate-delivery path.
-//
-// asynq's NewClient is goroutine-safe and reuses one Redis connection pool
-// internally; one Queue per process is the expected shape.
+// queueNames is the fixed set of priority queues the adapter targets.
+// Cancel scans each one because the caller does not know which priority
+// the original enqueue used.
+var queueNames = []string{
+	string(domain.PriorityHigh),
+	string(domain.PriorityNormal),
+	string(domain.PriorityLow),
+}
+
+// Queue is the asynq-backed implementation of ports.Queue. Holds both an
+// asynq Client (producer side) and an Inspector (control plane, used by
+// Cancel). asynq's NewClient is goroutine-safe; one Queue per process is
+// the expected shape.
 type Queue struct {
-	client *hibikenasynq.Client
+	client    *hibikenasynq.Client
+	inspector *hibikenasynq.Inspector
 }
 
 // NewQueue wires an asynq RedisConnOpt (the same shape cmd/worker uses) into
-// a queue producer.
+// a queue producer plus an inspector.
 func NewQueue(redisOpt hibikenasynq.RedisConnOpt) *Queue {
-	return &Queue{client: hibikenasynq.NewClient(redisOpt)}
+	return &Queue{
+		client:    hibikenasynq.NewClient(redisOpt),
+		inspector: hibikenasynq.NewInspector(redisOpt),
+	}
 }
 
-// Close releases the underlying Redis connection pool. Callers typically
+// Close releases the underlying Redis connection pools. Callers typically
 // defer it for the lifetime of the process.
 func (q *Queue) Close() error {
-	return q.client.Close()
+	clientErr := q.client.Close()
+	inspectorErr := q.inspector.Close()
+	if clientErr != nil {
+		return clientErr
+	}
+	return inspectorErr
 }
 
 // Enqueue schedules a notification for immediate processing on its
@@ -61,6 +78,24 @@ func (q *Queue) EnqueueScheduled(ctx context.Context, notificationID domain.Noti
 	opts = append(opts, hibikenasynq.ProcessAt(at))
 	if _, err := q.client.EnqueueContext(ctx, task, opts...); err != nil {
 		return fmt.Errorf("enqueue scheduled notification %s: %w", notificationID, err)
+	}
+	return nil
+}
+
+// Cancel removes any pending or scheduled task for the notification. This
+// is best-effort by design (port docs): a task that has already been picked
+// up by a worker is not retracted — the worker checks status before sending
+// (atomic claim, ADR-0009). The caller does not know which priority queue
+// the task is in, so Cancel attempts each one and treats "not found" as
+// success.
+func (q *Queue) Cancel(_ context.Context, notificationID domain.NotificationID) error {
+	taskID := TaskIDFor(notificationID, "")
+	for _, name := range queueNames {
+		err := q.inspector.DeleteTask(name, taskID)
+		if err == nil || errors.Is(err, hibikenasynq.ErrTaskNotFound) || errors.Is(err, hibikenasynq.ErrQueueNotFound) {
+			continue
+		}
+		return fmt.Errorf("cancel notification %s on queue %s: %w", notificationID, name, err)
 	}
 	return nil
 }

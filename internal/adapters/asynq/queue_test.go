@@ -104,6 +104,80 @@ func TestQueue_EnqueueScheduled(t *testing.T) {
 	require.Equal(t, asynqadapter.TypeProcessNotification, scheduled[0].Type)
 }
 
+// TestQueue_Cancel_PendingTask: a pending task is removed by Cancel and the
+// queue ends up empty. No error.
+func TestQueue_Cancel_PendingTask(t *testing.T) {
+	redisOpt, cleanup := setupRedisForAsynq(t)
+	defer cleanup()
+
+	q := asynqadapter.NewQueue(redisOpt)
+	defer func() { _ = q.Close() }()
+
+	inspector := hibikenasynq.NewInspector(redisOpt)
+	defer func() { _ = inspector.Close() }()
+	awaitInspector(t, inspector)
+
+	ctx := context.Background()
+	notifID := domain.NotificationID("01940000-0000-7000-8000-000000000041")
+
+	require.NoError(t, q.Enqueue(ctx, notifID, domain.PriorityNormal, ""))
+
+	infos, err := inspector.ListPendingTasks("normal")
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+
+	require.NoError(t, q.Cancel(ctx, notifID))
+
+	infos, err = inspector.ListPendingTasks("normal")
+	require.NoError(t, err)
+	require.Empty(t, infos, "cancel must remove the pending task")
+}
+
+// TestQueue_Cancel_ScheduledTask: a scheduled (future) task is also removed.
+func TestQueue_Cancel_ScheduledTask(t *testing.T) {
+	redisOpt, cleanup := setupRedisForAsynq(t)
+	defer cleanup()
+
+	q := asynqadapter.NewQueue(redisOpt)
+	defer func() { _ = q.Close() }()
+
+	inspector := hibikenasynq.NewInspector(redisOpt)
+	defer func() { _ = inspector.Close() }()
+	awaitInspector(t, inspector)
+
+	ctx := context.Background()
+	notifID := domain.NotificationID("01940000-0000-7000-8000-000000000042")
+
+	require.NoError(t, q.EnqueueScheduled(ctx, notifID, domain.PriorityNormal, time.Now().Add(time.Hour)))
+
+	scheduled, err := inspector.ListScheduledTasks("normal")
+	require.NoError(t, err)
+	require.Len(t, scheduled, 1)
+
+	require.NoError(t, q.Cancel(ctx, notifID))
+
+	scheduled, err = inspector.ListScheduledTasks("normal")
+	require.NoError(t, err)
+	require.Empty(t, scheduled, "cancel must remove the scheduled task")
+}
+
+// TestQueue_Cancel_UnknownNotification: canceling a non-existent task is a
+// no-op — no error, nothing to clean up.
+func TestQueue_Cancel_UnknownNotification(t *testing.T) {
+	redisOpt, cleanup := setupRedisForAsynq(t)
+	defer cleanup()
+
+	q := asynqadapter.NewQueue(redisOpt)
+	defer func() { _ = q.Close() }()
+
+	inspector := hibikenasynq.NewInspector(redisOpt)
+	defer func() { _ = inspector.Close() }()
+	awaitInspector(t, inspector)
+
+	err := q.Cancel(context.Background(), domain.NotificationID("01940000-0000-7000-8000-000000000043"))
+	require.NoError(t, err, "missing task must not surface as an error (best-effort cancel)")
+}
+
 // TestQueue_Enqueue_IdempotencyKeyDeduplicates: enqueueing the same task id
 // twice within the uniqueness window must reject the duplicate (CLAUDE.md
 // §3.9 second layer).
