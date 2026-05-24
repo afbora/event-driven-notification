@@ -44,6 +44,21 @@ type GetNotificationTraceExecutor func(ctx context.Context, in application.GetNo
 // (*application.GetBatch).Execute; tests pass a closure.
 type GetBatchExecutor func(ctx context.Context, in application.GetBatchInput) (*domain.Batch, error)
 
+// CreateTemplateExecutor is the slim contract for POST /api/v1/templates.
+type CreateTemplateExecutor func(ctx context.Context, in application.CreateTemplateInput) (*domain.Template, error)
+
+// GetTemplateExecutor is the slim contract for GET /api/v1/templates/{id}.
+type GetTemplateExecutor func(ctx context.Context, in application.GetTemplateInput) (*domain.Template, error)
+
+// ListTemplatesExecutor is the slim contract for GET /api/v1/templates.
+type ListTemplatesExecutor func(ctx context.Context, in application.ListTemplatesInput) (application.ListTemplatesOutput, error)
+
+// ReplaceTemplateExecutor is the slim contract for PUT /api/v1/templates/{id}.
+type ReplaceTemplateExecutor func(ctx context.Context, in application.ReplaceTemplateInput) (*domain.Template, error)
+
+// DeleteTemplateExecutor is the slim contract for DELETE /api/v1/templates/{id}.
+type DeleteTemplateExecutor func(ctx context.Context, in application.DeleteTemplateInput) error
+
 // ServerOptions bundles the per-operation executors the Server needs.
 // Each operation has its own slot so partial wiring is legal — an
 // operation without an executor falls through to the embedded
@@ -57,6 +72,12 @@ type ServerOptions struct {
 	CancelNotification   CancelNotificationExecutor
 	GetNotificationTrace GetNotificationTraceExecutor
 	GetBatch             GetBatchExecutor
+
+	CreateTemplate  CreateTemplateExecutor
+	GetTemplate     GetTemplateExecutor
+	ListTemplates   ListTemplatesExecutor
+	ReplaceTemplate ReplaceTemplateExecutor
+	DeleteTemplate  DeleteTemplateExecutor
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
@@ -77,6 +98,12 @@ type Server struct {
 	cancelNotification   CancelNotificationExecutor
 	getNotificationTrace GetNotificationTraceExecutor
 	getBatch             GetBatchExecutor
+
+	createTemplate  CreateTemplateExecutor
+	getTemplate     GetTemplateExecutor
+	listTemplates   ListTemplatesExecutor
+	replaceTemplate ReplaceTemplateExecutor
+	deleteTemplate  DeleteTemplateExecutor
 }
 
 // NewServer wires the executors carried by opts into a Server. The
@@ -91,5 +118,10 @@ func NewServer(opts ServerOptions) *Server {
 		cancelNotification:   opts.CancelNotification,
 		getNotificationTrace: opts.GetNotificationTrace,
 		getBatch:             opts.GetBatch,
+		createTemplate:       opts.CreateTemplate,
+		getTemplate:          opts.GetTemplate,
+		listTemplates:        opts.ListTemplates,
+		replaceTemplate:      opts.ReplaceTemplate,
+		deleteTemplate:       opts.DeleteTemplate,
 	}
 }
