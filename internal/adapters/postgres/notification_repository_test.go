@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -389,4 +390,135 @@ func TestUpdateStatus_NotFound(t *testing.T) {
 
 	err := repo.UpdateStatus(ctx, ghost, domain.StatusPending)
 	require.ErrorIs(t, err, ports.ErrConcurrentUpdate)
+}
+
+// --- List with cursor pagination -----------------------------------------
+
+// seedTimestamped persists a notification with a caller-controlled CreatedAt
+// so list-order tests can rely on a deterministic sequence.
+func seedTimestamped(t *testing.T, repo *postgres.NotificationRepository, id domain.NotificationID, createdAt time.Time) *domain.Notification {
+	t.Helper()
+	n, err := domain.NewNotification(domain.NewNotificationInput{
+		ID:            id,
+		CorrelationID: "01940000-0000-7000-8000-0000000000c0",
+		Channel:       domain.ChannelSMS,
+		Priority:      domain.PriorityNormal,
+		Recipient:     "+905551234567",
+		Content:       "list pagination test",
+	}, createdAt)
+	require.NoError(t, err)
+	require.NoError(t, repo.Create(context.Background(), n))
+	return n
+}
+
+// TestList_EmptyResult: no rows in the table → empty slice, empty cursor.
+func TestList_EmptyResult(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	items, cursor, err := repo.List(context.Background(), ports.NotificationFilter{}, "", 10)
+	require.NoError(t, err)
+	require.Empty(t, items)
+	require.Empty(t, cursor)
+}
+
+// TestList_SinglePage_FewerThanLimit: every row fits in one page → returned
+// in created_at DESC order, no next cursor.
+func TestList_SinglePage_FewerThanLimit(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	// Three rows, each one minute apart so ordering is unambiguous.
+	for i := 0; i < 3; i++ {
+		seedTimestamped(t, repo,
+			integrationNotificationID(fmt.Sprintf("3%d", i)),
+			fixedIntegrationNow.Add(time.Duration(i)*time.Minute),
+		)
+	}
+
+	items, cursor, err := repo.List(ctx, ports.NotificationFilter{}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, items, 3)
+	require.Empty(t, cursor, "fewer than limit → no next page")
+
+	// Latest first.
+	require.Equal(t, integrationNotificationID("32"), items[0].ID)
+	require.Equal(t, integrationNotificationID("31"), items[1].ID)
+	require.Equal(t, integrationNotificationID("30"), items[2].ID)
+}
+
+// TestList_MultiPage: walk a 5-row table at limit=2. Three pages: 2, 2, 1.
+// The final page has an empty cursor.
+func TestList_MultiPage(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		seedTimestamped(t, repo,
+			integrationNotificationID(fmt.Sprintf("4%d", i)),
+			fixedIntegrationNow.Add(time.Duration(i)*time.Minute),
+		)
+	}
+
+	// Page 1.
+	items1, cursor1, err := repo.List(ctx, ports.NotificationFilter{}, "", 2)
+	require.NoError(t, err)
+	require.Len(t, items1, 2)
+	require.NotEmpty(t, cursor1)
+	require.Equal(t, integrationNotificationID("44"), items1[0].ID)
+	require.Equal(t, integrationNotificationID("43"), items1[1].ID)
+
+	// Page 2.
+	items2, cursor2, err := repo.List(ctx, ports.NotificationFilter{}, cursor1, 2)
+	require.NoError(t, err)
+	require.Len(t, items2, 2)
+	require.NotEmpty(t, cursor2)
+	require.Equal(t, integrationNotificationID("42"), items2[0].ID)
+	require.Equal(t, integrationNotificationID("41"), items2[1].ID)
+
+	// Page 3 — final, partial, empty cursor.
+	items3, cursor3, err := repo.List(ctx, ports.NotificationFilter{}, cursor2, 2)
+	require.NoError(t, err)
+	require.Len(t, items3, 1)
+	require.Empty(t, cursor3, "final page → empty cursor")
+	require.Equal(t, integrationNotificationID("40"), items3[0].ID)
+}
+
+// TestList_FilterByStatus: status filter narrows the result set.
+func TestList_FilterByStatus(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	seedAtStatus(t, repo, pool, integrationNotificationID("50"), domain.StatusDelivered)
+	seedAtStatus(t, repo, pool, integrationNotificationID("51"), domain.StatusFailed)
+	seedAtStatus(t, repo, pool, integrationNotificationID("52"), domain.StatusDelivered)
+
+	delivered := domain.StatusDelivered
+	items, _, err := repo.List(ctx, ports.NotificationFilter{Status: &delivered}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	for _, n := range items {
+		require.Equal(t, domain.StatusDelivered, n.Status)
+	}
+}
+
+// TestList_InvalidCursor: malformed cursor → error before the database is
+// consulted; the caller knows to drop the cursor and start over.
+func TestList_InvalidCursor(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	_, _, err := repo.List(context.Background(), ports.NotificationFilter{}, "not-a-real-cursor", 10)
+	require.Error(t, err)
 }
