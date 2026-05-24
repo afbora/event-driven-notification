@@ -8,7 +8,11 @@
 
 BIN_DIR        := bin
 BINARIES       := api worker reconciler migrate
-COVERAGE_OUT   := coverage.out
+COVERAGE_DIR   := coverage
+COVERAGE_OUT   := $(COVERAGE_DIR)/coverage.out
+COVERAGE_UNIT  := $(COVERAGE_DIR)/unit.out
+COVERAGE_INT   := $(COVERAGE_DIR)/integration.out
+COVERAGE_E2E   := $(COVERAGE_DIR)/e2e.out
 MIGRATIONS_DIR := db/migrations
 
 # DSN used by `make migrate-*`. Matches the docker-compose default for the
@@ -20,7 +24,8 @@ DATABASE_URL   ?= postgres://notification:notification@localhost:5432/notificati
 
 .PHONY: help \
         build clean \
-        test test-race test-integration test-e2e coverage \
+        test test-race test-integration test-e2e \
+        coverage coverage-unit coverage-integration coverage-e2e coverage-all coverage-html \
         lint lint-fix \
         sqlc openapi \
         migrate-up migrate-down migrate-create \
@@ -42,7 +47,7 @@ build: ## Compile every cmd/* binary into ./bin.
 	done
 
 clean: ## Remove build artifacts and coverage outputs.
-	rm -rf $(BIN_DIR) $(COVERAGE_OUT) coverage.html
+	rm -rf $(BIN_DIR) $(COVERAGE_DIR) coverage.html
 
 # --- Test ------------------------------------------------------------------
 
@@ -52,15 +57,39 @@ test: ## Run unit tests across all packages.
 test-race: ## Run unit tests with the race detector enabled.
 	go test -race ./...
 
-test-integration: ## Run integration tests (//go:build integration).
-	go test -tags=integration ./tests/integration/...
+test-integration: ## Run integration tests (//go:build integration) — adapter packages.
+	go test -tags=integration ./internal/adapters/...
 
 test-e2e: ## Run end-to-end tests (//go:build e2e).
 	go test -tags=e2e ./tests/e2e/...
 
-coverage: ## Run tests with coverage and emit coverage.out + coverage.html.
-	go test -coverprofile=$(COVERAGE_OUT) ./...
+# --- Coverage --------------------------------------------------------------
+# Each suite writes its own profile under $(COVERAGE_DIR); coverage-all
+# merges them via gocovmerge so SonarCloud / `go tool cover` see one file.
+# atomic mode is used everywhere so the merge is safe and race-aware.
+
+$(COVERAGE_DIR):
+	@mkdir -p $(COVERAGE_DIR)
+
+coverage-unit: $(COVERAGE_DIR) ## Run unit tests with coverage → $(COVERAGE_UNIT).
+	go test -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_UNIT) ./...
+
+coverage-integration: $(COVERAGE_DIR) ## Run integration tests with coverage → $(COVERAGE_INT).
+	go test -tags=integration -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_INT) ./internal/adapters/...
+
+coverage-e2e: $(COVERAGE_DIR) ## Run end-to-end tests with coverage → $(COVERAGE_E2E).
+	go test -tags=e2e -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_E2E) ./tests/e2e/...
+
+coverage-all: coverage-unit coverage-integration coverage-e2e ## Run every suite then merge into $(COVERAGE_OUT) via gocovmerge.
+	gocovmerge $(COVERAGE_UNIT) $(COVERAGE_INT) $(COVERAGE_E2E) > $(COVERAGE_OUT)
+	@echo "merged coverage written to $(COVERAGE_OUT)"
+
+coverage-html: $(COVERAGE_OUT) ## Render coverage.out as coverage.html.
 	go tool cover -html=$(COVERAGE_OUT) -o coverage.html
+	@echo "open coverage.html in a browser"
+
+coverage: coverage-unit ## Shorthand for unit-only coverage; use coverage-all for everything.
+	go tool cover -html=$(COVERAGE_UNIT) -o coverage.html
 	@echo "open coverage.html in a browser"
 
 # --- Lint ------------------------------------------------------------------
@@ -97,12 +126,13 @@ migrate-create: ## Create a new migration pair. Usage: make migrate-create NAME=
 
 # --- Dev tools -------------------------------------------------------------
 
-tools: ## Install required Go tools into $GOBIN: lint, sqlc, migrate, oapi-codegen, air.
+tools: ## Install required Go tools into $GOBIN: lint, sqlc, migrate, oapi-codegen, air, gocovmerge.
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 	go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 	go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
 	go install github.com/air-verse/air@latest
+	go install github.com/wadey/gocovmerge@latest
 
 # --- Run locally (without docker compose) ----------------------------------
 
