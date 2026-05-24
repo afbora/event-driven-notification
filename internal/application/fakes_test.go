@@ -231,8 +231,16 @@ func (r *fakeNotificationLogRepo) Append(_ context.Context, entry *domain.Notifi
 	return nil
 }
 
-func (r *fakeNotificationLogRepo) List(_ context.Context, _ domain.NotificationID) ([]*domain.NotificationLog, error) {
-	return nil, errFakeNotImplemented
+func (r *fakeNotificationLogRepo) List(_ context.Context, notificationID domain.NotificationID) ([]*domain.NotificationLog, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.NotificationLog
+	for _, e := range r.entries {
+		if e.NotificationID == notificationID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 // --- Queue ----------------------------------------------------------------
