@@ -35,3 +35,20 @@ SET    status     = 'processing',
 WHERE  id = $1
   AND  status IN ('queued', 'retrying')
 RETURNING *;
+
+-- UpdateNotificationStatus persists the mutations a use case applied to
+-- a notification entity (Cancel / MarkDelivered / MarkFailed / MarkRetrying).
+-- The WHERE clause includes the expected source status as a concurrency
+-- guard: zero rows affected means another writer changed the row between
+-- the read and this update. The repository surfaces this as
+-- ports.ErrConcurrentUpdate.
+
+-- name: UpdateNotificationStatus :execrows
+UPDATE notifications
+SET    status        = sqlc.arg('new_status'),
+       attempts      = sqlc.arg('attempts'),
+       last_error    = sqlc.arg('last_error'),
+       next_retry_at = sqlc.arg('next_retry_at'),
+       updated_at    = sqlc.arg('updated_at')
+WHERE  id              = sqlc.arg('id')
+  AND  status          = sqlc.arg('expected_source');

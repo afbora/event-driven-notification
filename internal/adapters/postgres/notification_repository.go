@@ -88,6 +88,40 @@ func (r *NotificationRepository) ClaimForProcessing(ctx context.Context, id doma
 	return notificationFromRow(row)
 }
 
+// UpdateStatus persists a status transition the caller has already applied
+// to the in-memory entity via a Mark* method. The WHERE clause guards
+// against concurrent modification: if the row's current status no longer
+// matches expectedSource (another writer beat us, or the id is unknown),
+// no rows are affected and the method returns ports.ErrConcurrentUpdate
+// without touching the database.
+//
+// Use cases that need a hard 404 (CancelNotification, ProcessNotification)
+// must Get the row first; UpdateStatus folds NotFound into ConcurrentUpdate.
+func (r *NotificationRepository) UpdateStatus(ctx context.Context, n *domain.Notification, expectedSource domain.Status) error {
+	pgID, err := parseUUID(string(n.ID))
+	if err != nil {
+		return fmt.Errorf("parse notification id %q: %w", n.ID, err)
+	}
+
+	rows, err := r.q.UpdateNotificationStatus(ctx, sqlc.UpdateNotificationStatusParams{
+		ID:             pgID,
+		NewStatus:      string(n.Status),
+		Attempts:       int32(n.Attempts), //nolint:gosec // capped by retry policy
+		LastError:      n.LastError,
+		NextRetryAt:    timeToTimestamptzPtr(n.NextRetryAt),
+		UpdatedAt:      timeToTimestamptz(n.UpdatedAt),
+		ExpectedSource: string(expectedSource),
+	})
+	if err != nil {
+		return fmt.Errorf("update notification %s: %w", n.ID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: notification %s expected source %s",
+			ports.ErrConcurrentUpdate, n.ID, expectedSource)
+	}
+	return nil
+}
+
 // Get returns the notification with the given id, or ports.ErrNotFound when
 // the row does not exist. ID strings that do not parse as a UUID are
 // reported as errors before the database is consulted.

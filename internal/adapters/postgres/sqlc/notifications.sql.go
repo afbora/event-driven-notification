@@ -145,3 +145,47 @@ func (q *Queries) GetNotification(ctx context.Context, id pgtype.UUID) (Notifica
 	)
 	return i, err
 }
+
+const updateNotificationStatus = `-- name: UpdateNotificationStatus :execrows
+
+UPDATE notifications
+SET    status        = $1,
+       attempts      = $2,
+       last_error    = $3,
+       next_retry_at = $4,
+       updated_at    = $5
+WHERE  id              = $6
+  AND  status          = $7
+`
+
+type UpdateNotificationStatusParams struct {
+	NewStatus      string
+	Attempts       int32
+	LastError      string
+	NextRetryAt    pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	ID             pgtype.UUID
+	ExpectedSource string
+}
+
+// UpdateNotificationStatus persists the mutations a use case applied to
+// a notification entity (Cancel / MarkDelivered / MarkFailed / MarkRetrying).
+// The WHERE clause includes the expected source status as a concurrency
+// guard: zero rows affected means another writer changed the row between
+// the read and this update. The repository surfaces this as
+// ports.ErrConcurrentUpdate.
+func (q *Queries) UpdateNotificationStatus(ctx context.Context, arg UpdateNotificationStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateNotificationStatus,
+		arg.NewStatus,
+		arg.Attempts,
+		arg.LastError,
+		arg.NextRetryAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedSource,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
