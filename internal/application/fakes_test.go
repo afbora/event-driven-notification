@@ -144,6 +144,38 @@ func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Tim
 	return nil, errFakeNotImplemented
 }
 
+// --- BatchRepository -----------------------------------------------------
+
+type fakeBatchRepo struct {
+	mu        sync.Mutex
+	store     map[domain.BatchID]*domain.Batch
+	createErr error
+}
+
+func newFakeBatchRepo() *fakeBatchRepo {
+	return &fakeBatchRepo{store: make(map[domain.BatchID]*domain.Batch)}
+}
+
+func (r *fakeBatchRepo) Create(_ context.Context, b *domain.Batch) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.createErr != nil {
+		return r.createErr
+	}
+	r.store[b.ID] = b
+	return nil
+}
+
+func (r *fakeBatchRepo) Get(_ context.Context, id domain.BatchID) (*domain.Batch, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.store[id]
+	if !ok {
+		return nil, ports.ErrNotFound
+	}
+	return b, nil
+}
+
 // --- NotificationLogRepository -------------------------------------------
 
 type fakeNotificationLogRepo struct {
