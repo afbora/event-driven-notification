@@ -95,6 +95,20 @@ type fakeNotificationRepo struct {
 	listCalls  []listCallParams
 	listResult []*domain.Notification
 	nextCursor string
+
+	// Reconciler queries — primed via Set*Reconciler.
+	orphanedPending []*domain.Notification
+	stuckProcessing []*domain.Notification
+	overdueRetrying []*domain.Notification
+}
+
+// SetReconcilerResults primes the next reconciliation sweep's return values.
+func (r *fakeNotificationRepo) SetReconcilerResults(orphanedPending, stuckProcessing, overdueRetrying []*domain.Notification) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.orphanedPending = orphanedPending
+	r.stuckProcessing = stuckProcessing
+	r.overdueRetrying = overdueRetrying
 }
 
 func newFakeNotificationRepo() *fakeNotificationRepo {
@@ -188,15 +202,21 @@ func (r *fakeNotificationRepo) List(_ context.Context, filter ports.Notification
 }
 
 func (r *fakeNotificationRepo) FindOrphanedPending(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
-	return nil, errFakeNotImplemented
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.orphanedPending, nil
 }
 
 func (r *fakeNotificationRepo) FindStuckProcessing(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
-	return nil, errFakeNotImplemented
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stuckProcessing, nil
 }
 
 func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
-	return nil, errFakeNotImplemented
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.overdueRetrying, nil
 }
 
 // --- BatchRepository -----------------------------------------------------
