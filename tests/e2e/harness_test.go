@@ -67,10 +67,11 @@ type Harness struct {
 	// Diagnostic handles exposed for tests that need to peek at
 	// internal state or steer provider behavior. Use sparingly — the
 	// preferred axis is the HTTP API itself.
-	Pool     *pgxpool.Pool
-	Redis    *goredis.Client
-	Provider *provideradapter.MockProvider
-	Hub      *wsadapter.Hub
+	Pool      *pgxpool.Pool
+	Redis     *goredis.Client
+	RedisAddr string // host:port for tests that need to build an asynq Inspector
+	Provider  *provideradapter.MockProvider
+	Hub       *wsadapter.Hub
 }
 
 // NewHarness brings up the full stack. The supplied ctx is used for
@@ -97,7 +98,12 @@ func NewHarness(ctx context.Context, t *testing.T) *Harness {
 	logRepo := pgadapter.NewNotificationLogRepository(pool)
 
 	idempStore := redisadapter.NewIdempotencyStore(redisClient)
-	inboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 60, time.Minute)
+	// Inbound limiter is deliberately set well above the production
+	// 60 req/min so a polling test (200ms cadence over 30s = 150
+	// requests) does not trip the limiter. The dedicated rate-limit
+	// e2e test (PLAN phase 5 task 6) builds its own harness with the
+	// production cap to assert the 429 behavior end-to-end.
+	inboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 100000, time.Minute)
 	outboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 100, time.Second)
 	broadcaster := redisadapter.NewStatusBroadcaster(redisClient)
 
@@ -141,12 +147,11 @@ func NewHarness(ctx context.Context, t *testing.T) *Harness {
 	mux := hibikenasynq.NewServeMux()
 	processor.Register(mux)
 
-	workerErr := make(chan error, 1)
-	go func() {
-		if err := asynqSrv.Run(mux); err != nil {
-			workerErr <- err
-		}
-	}()
+	// Start (not Run) so the Server does NOT install its own signal
+	// handler. On Windows the test process already owns SIGINT/SIGTERM
+	// via testcontainers' reaper, and the two installations race —
+	// see https://github.com/hibiken/asynq/blob/v0.26.0/signals_windows.go
+	require.NoError(t, asynqSrv.Start(mux), "start asynq worker")
 
 	// --- websocket consumer -------------------------------------------
 	wsConsumer := wsadapter.NewConsumer(redisClient, hub)
@@ -207,21 +212,15 @@ func NewHarness(ctx context.Context, t *testing.T) *Harness {
 		_ = redisClient.Close()
 		redisCleanup()
 		pgCleanup()
-		// Drain any worker error so the goroutine is observable in
-		// failures; ignored on the happy path.
-		select {
-		case err := <-workerErr:
-			t.Logf("asynq worker exited: %v", err)
-		default:
-		}
 	})
 
 	return &Harness{
-		BaseURL:  httpSrv.URL,
-		Pool:     pool,
-		Redis:    redisClient,
-		Provider: mockProvider,
-		Hub:      hub,
+		BaseURL:   httpSrv.URL,
+		Pool:      pool,
+		Redis:     redisClient,
+		RedisAddr: redisAddr,
+		Provider:  mockProvider,
+		Hub:       hub,
 	}
 }
 
