@@ -1,13 +1,77 @@
-# AlertManager configuration — phase 1 skeleton.
-# Full routing (critical → webhook-critical, warning → webhook-warning) arrives
-# in phase 6 task 10. Production swap-in points (Slack, PagerDuty, email) live
-# in the same file as commented blocks.
+# AlertManager configuration — Phase 6 task 10.
+#
+# Routing tree:
+#
+#   severity=critical  →  webhook-critical
+#   severity=warning   →  webhook-warning
+#   (anything else)    →  default (catch-all, also a webhook log)
+#
+# All three receivers point at a *local log receiver* (the alertmanager
+# image's debug endpoint, http://alertmanager:9093/api/v2/...). In
+# production the receiver URLs are swapped for Slack / PagerDuty /
+# email — the routing tree itself never changes.
+#
+# Production swap-in points (uncomment + drop in your token):
+#
+#   - name: 'webhook-critical'
+#     slack_configs:
+#       - api_url: '$SLACK_WEBHOOK_URL'
+#         channel: '#incidents-critical'
+#         title: '{{ .CommonAnnotations.summary }}'
+#         text:  '{{ range .Alerts }}{{ .Annotations.summary }} ({{ .Labels.severity }}){{ end }}'
+#
+#   - name: 'webhook-critical'
+#     pagerduty_configs:
+#       - routing_key: '$PAGERDUTY_KEY'
+#         severity: 'critical'
+
+global:
+  resolve_timeout: 5m
 
 route:
   receiver: 'default'
+  group_by: ['alertname', 'severity']
   group_wait:      10s
   group_interval:  30s
   repeat_interval: 1h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: 'webhook-critical'
+      continue: false
+    - matchers:
+        - severity = "warning"
+      receiver: 'webhook-warning'
+      continue: false
 
 receivers:
+  # The httpbin.org receivers below are placeholders that simply
+  # accept the POST and let alertmanager log a 200. They mean
+  # "alerts went somewhere"; in production replace with real
+  # destinations.
+
   - name: 'default'
+    webhook_configs:
+      - url: 'http://httpbin.org/post'
+        send_resolved: true
+
+  - name: 'webhook-critical'
+    webhook_configs:
+      - url: 'http://httpbin.org/post'
+        send_resolved: true
+
+  - name: 'webhook-warning'
+    webhook_configs:
+      - url: 'http://httpbin.org/post'
+        send_resolved: true
+
+# Inhibition rule: when an api / worker / reconciler instance is
+# down (RedisUnreachable proxy), suppress all the warning alerts
+# tied to it — the operator already knows the upstream is sick.
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+      - alertname = "RedisUnreachable"
+    target_matchers:
+      - severity = "warning"
+    equal: ['cluster']
