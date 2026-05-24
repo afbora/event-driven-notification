@@ -1,0 +1,27 @@
+# oapi-codegen configuration — read by `make openapi`.
+#
+# The generated file is committed (regenerated only when openapi.yaml
+# changes) so reviewers do not need to run codegen to read or build the
+# project. Adapter handlers implement StrictServerInterface; chi wiring
+# is provided by the generated HandlerFromMux.
+package: api
+output: internal/adapters/http/api/api.gen.go
+
+generate:
+  # Generated Go structs for every schema in components.schemas.
+  models: true
+
+  # chi-server wiring: HandlerFromMux registers operation routes on a
+  # chi.Router given a ServerInterface implementation.
+  chi-server: true
+
+  # strict-server: type-safe request/response wrappers around each
+  # operation — handlers receive a typed Request struct and return a
+  # typed Response interface, eliminating manual body decoding and
+  # status selection in handler code.
+  strict-server: true
+
+  # Embeds the spec into the binary so the API can self-serve its own
+  # documentation at /docs (Swagger UI, task 26) without reading from
+  # disk.
+  embedded-spec: true
