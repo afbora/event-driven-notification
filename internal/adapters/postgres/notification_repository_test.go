@@ -278,3 +278,115 @@ func TestClaimForProcessing_NotFound(t *testing.T) {
 	_, err := repo.ClaimForProcessing(context.Background(), integrationNotificationID("ff"), fixedIntegrationNow)
 	require.ErrorIs(t, err, ports.ErrNotFound)
 }
+
+// --- UpdateStatus ---------------------------------------------------------
+
+// TestUpdateStatus_HappyPath: queued → cancelled, every mutable field
+// (status, attempts, last_error, next_retry_at, updated_at) round-trips.
+func TestUpdateStatus_HappyPath(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("20"), domain.StatusQueued)
+
+	// Mutate the in-memory entity the way the use case would, then persist.
+	now := fixedIntegrationNow.Add(5 * time.Minute)
+	require.NoError(t, seeded.Cancel(now))
+
+	err := repo.UpdateStatus(ctx, seeded, domain.StatusQueued)
+	require.NoError(t, err)
+
+	stored, err := repo.Get(ctx, seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusCancelled, stored.Status)
+	require.True(t, stored.UpdatedAt.Equal(now),
+		"UpdatedAt: got %v, want %v", stored.UpdatedAt, now)
+}
+
+// TestUpdateStatus_RecordsRetryFields: MarkRetrying populates LastError and
+// NextRetryAt; both must persist.
+func TestUpdateStatus_RecordsRetryFields(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("21"), domain.StatusProcessing)
+
+	now := fixedIntegrationNow.Add(time.Minute)
+	nextRetryAt := now.Add(30 * time.Second)
+	require.NoError(t, seeded.MarkRetrying(now, "provider 503", nextRetryAt))
+
+	require.NoError(t, repo.UpdateStatus(ctx, seeded, domain.StatusProcessing))
+
+	stored, err := repo.Get(ctx, seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusRetrying, stored.Status)
+	require.Equal(t, "provider 503", stored.LastError)
+	require.NotNil(t, stored.NextRetryAt)
+	require.True(t, stored.NextRetryAt.Equal(nextRetryAt))
+}
+
+// TestUpdateStatus_RecordsAttempts: the attempts counter mutated in-memory
+// (e.g. by MarkProcessing in earlier flows) is persisted.
+func TestUpdateStatus_RecordsAttempts(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("22"), domain.StatusProcessing)
+	seeded.Attempts = 3
+	require.NoError(t, seeded.MarkDelivered(fixedIntegrationNow.Add(time.Minute)))
+
+	require.NoError(t, repo.UpdateStatus(ctx, seeded, domain.StatusProcessing))
+
+	stored, err := repo.Get(ctx, seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, 3, stored.Attempts)
+}
+
+// TestUpdateStatus_ConcurrentUpdate: the row's current status does not match
+// expectedSource (another writer beat us to it). UpdateStatus surfaces
+// ports.ErrConcurrentUpdate and leaves the row untouched.
+func TestUpdateStatus_ConcurrentUpdate(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	// Row is actually in processing, but the caller thinks it's still queued.
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("23"), domain.StatusProcessing)
+	require.NoError(t, seeded.MarkDelivered(fixedIntegrationNow.Add(time.Minute)))
+
+	err := repo.UpdateStatus(ctx, seeded, domain.StatusQueued) // wrong expected source
+	require.ErrorIs(t, err, ports.ErrConcurrentUpdate)
+
+	// Row is still in processing — no writes happened.
+	stored, err := repo.Get(ctx, seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusProcessing, stored.Status)
+}
+
+// TestUpdateStatus_NotFound: unknown id behaves like a concurrent update —
+// the WHERE clause matches zero rows. Use cases that need a hard 404 should
+// Get first (CancelNotification / ProcessNotification already do).
+func TestUpdateStatus_NotFound(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	ghost := makeIntegrationNotification(t, integrationNotificationID("ff"))
+	require.NoError(t, ghost.MarkQueued(fixedIntegrationNow.Add(time.Minute)))
+
+	err := repo.UpdateStatus(ctx, ghost, domain.StatusPending)
+	require.ErrorIs(t, err, ports.ErrConcurrentUpdate)
+}
