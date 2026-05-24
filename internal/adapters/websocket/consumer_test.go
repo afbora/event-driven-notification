@@ -121,7 +121,7 @@ func TestConsumer_ForwardsToHub(t *testing.T) {
 	}
 }
 
-// TestConsumer_ContextCancellationExits: cancelling the context returns
+// TestConsumer_ContextCancellationExits: canceling the context returns
 // Run cleanly with the canceled-context error.
 func TestConsumer_ContextCancellationExits(t *testing.T) {
 	client, cleanup := setupRedisForConsumer(t)
