@@ -52,3 +52,24 @@ SET    status        = sqlc.arg('new_status'),
        updated_at    = sqlc.arg('updated_at')
 WHERE  id              = sqlc.arg('id')
   AND  status          = sqlc.arg('expected_source');
+
+-- ListNotifications returns a page of notifications matching the supplied
+-- filters, ordered by (created_at DESC, id DESC). The keyset cursor (the
+-- last row's (created_at, id) tuple, base64-encoded by the repository) is
+-- compared as a Postgres composite so same-microsecond timestamps tiebreak
+-- on the id column. Every filter is nullable via sqlc.narg — pass NULL
+-- to skip the predicate. The repository fetches limit+1 rows so it can
+-- tell when more pages exist without an extra count query.
+
+-- name: ListNotifications :many
+SELECT *
+FROM   notifications
+WHERE  (sqlc.narg('status')::text          IS NULL OR status   = sqlc.narg('status'))
+  AND  (sqlc.narg('channel')::text         IS NULL OR channel  = sqlc.narg('channel'))
+  AND  (sqlc.narg('batch_id')::uuid        IS NULL OR batch_id = sqlc.narg('batch_id'))
+  AND  (sqlc.narg('created_after')::timestamptz  IS NULL OR created_at >= sqlc.narg('created_after'))
+  AND  (sqlc.narg('created_before')::timestamptz IS NULL OR created_at <= sqlc.narg('created_before'))
+  AND  (sqlc.narg('cursor_created_at')::timestamptz IS NULL
+        OR (created_at, id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('row_limit');

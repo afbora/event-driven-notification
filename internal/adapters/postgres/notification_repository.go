@@ -6,8 +6,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -138,6 +140,103 @@ func (r *NotificationRepository) Get(ctx context.Context, id domain.Notification
 		return nil, fmt.Errorf("get notification %s: %w", id, err)
 	}
 	return notificationFromRow(row)
+}
+
+// List returns a page of notifications matching filter, ordered by
+// (created_at DESC, id DESC). The returned cursor is opaque to the caller;
+// passing it back on the next call yields the next page. An empty next
+// cursor means the caller has reached the end.
+//
+// The implementation fetches limit+1 rows so it can detect "another page
+// exists" without an extra COUNT query — a standard keyset-pagination
+// trick that scales without surprises.
+func (r *NotificationRepository) List(ctx context.Context, filter ports.NotificationFilter, cursor string, limit int) ([]*domain.Notification, string, error) {
+	params := sqlc.ListNotificationsParams{
+		RowLimit: int32(limit + 1), //nolint:gosec // limit constrained by callers
+	}
+
+	if cursor != "" {
+		t, idStr, err := decodeCursor(cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode cursor: %w", err)
+		}
+		pgID, err := parseUUID(idStr)
+		if err != nil {
+			return nil, "", fmt.Errorf("cursor id: %w", err)
+		}
+		params.CursorCreatedAt = timeToTimestamptz(t)
+		params.CursorID = pgID
+	}
+
+	if filter.Status != nil {
+		s := string(*filter.Status)
+		params.Status = &s
+	}
+	if filter.Channel != nil {
+		c := string(*filter.Channel)
+		params.Channel = &c
+	}
+	if filter.BatchID != nil {
+		bid, err := parseUUID(string(*filter.BatchID))
+		if err != nil {
+			return nil, "", fmt.Errorf("batch_id filter: %w", err)
+		}
+		params.BatchID = bid
+	}
+	if filter.CreatedAfter != nil {
+		params.CreatedAfter = timeToTimestamptz(*filter.CreatedAfter)
+	}
+	if filter.CreatedBefore != nil {
+		params.CreatedBefore = timeToTimestamptz(*filter.CreatedBefore)
+	}
+
+	rows, err := r.q.ListNotifications(ctx, params)
+	if err != nil {
+		return nil, "", fmt.Errorf("list notifications: %w", err)
+	}
+
+	items := make([]*domain.Notification, 0, len(rows))
+	for _, row := range rows {
+		n, err := notificationFromRow(row)
+		if err != nil {
+			return nil, "", err
+		}
+		items = append(items, n)
+	}
+
+	var nextCursor string
+	if len(items) > limit {
+		last := items[limit-1]
+		nextCursor = encodeCursor(last.CreatedAt, string(last.ID))
+		items = items[:limit]
+	}
+	return items, nextCursor, nil
+}
+
+// encodeCursor produces an opaque base64 token from the (created_at, id)
+// pair that uniquely identifies a row in the keyset order. RFC3339Nano
+// preserves microsecond precision (postgres timestamptz resolution).
+func encodeCursor(t time.Time, id string) string {
+	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor inverts encodeCursor. Any parse failure surfaces as a clean
+// error so the HTTP layer can drop the cursor and start a fresh page.
+func decodeCursor(s string) (time.Time, string, error) {
+	raw, err := base64.URLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("base64: %w", err)
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, "", errors.New("malformed cursor: missing separator")
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("timestamp: %w", err)
+	}
+	return t, parts[1], nil
 }
 
 // --- domain <-> sqlc row conversions --------------------------------------

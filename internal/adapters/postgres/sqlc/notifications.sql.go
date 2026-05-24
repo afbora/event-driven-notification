@@ -146,6 +146,85 @@ func (q *Queries) GetNotification(ctx context.Context, id pgtype.UUID) (Notifica
 	return i, err
 }
 
+const listNotifications = `-- name: ListNotifications :many
+
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM   notifications
+WHERE  ($1::text          IS NULL OR status   = $1)
+  AND  ($2::text         IS NULL OR channel  = $2)
+  AND  ($3::uuid        IS NULL OR batch_id = $3)
+  AND  ($4::timestamptz  IS NULL OR created_at >= $4)
+  AND  ($5::timestamptz IS NULL OR created_at <= $5)
+  AND  ($6::timestamptz IS NULL
+        OR (created_at, id) < ($6::timestamptz, $7::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT $8
+`
+
+type ListNotificationsParams struct {
+	Status          *string
+	Channel         *string
+	BatchID         pgtype.UUID
+	CreatedAfter    pgtype.Timestamptz
+	CreatedBefore   pgtype.Timestamptz
+	CursorCreatedAt pgtype.Timestamptz
+	CursorID        pgtype.UUID
+	RowLimit        int32
+}
+
+// ListNotifications returns a page of notifications matching the supplied
+// filters, ordered by (created_at DESC, id DESC). The keyset cursor (the
+// last row's (created_at, id) tuple, base64-encoded by the repository) is
+// compared as a Postgres composite so same-microsecond timestamps tiebreak
+// on the id column. Every filter is nullable via sqlc.narg — pass NULL
+// to skip the predicate. The repository fetches limit+1 rows so it can
+// tell when more pages exist without an extra count query.
+func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, listNotifications,
+		arg.Status,
+		arg.Channel,
+		arg.BatchID,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateNotificationStatus = `-- name: UpdateNotificationStatus :execrows
 
 UPDATE notifications
