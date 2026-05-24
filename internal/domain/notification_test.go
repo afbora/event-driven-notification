@@ -37,7 +37,7 @@ func TestNewNotification(t *testing.T) {
 		mutate  func(*domain.NewNotificationInput)
 		wantErr error
 	}{
-		{name: "valid sms", mutate: func(in *domain.NewNotificationInput) {}},
+		{name: "valid sms", mutate: func(_ *domain.NewNotificationInput) {}},
 		{
 			name: "valid email",
 			mutate: func(in *domain.NewNotificationInput) {
