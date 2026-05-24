@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/afbora/event-driven-notification/internal/adapters/postgres"
@@ -160,4 +161,120 @@ func TestNotificationRepository_Create_IdempotencyKeyUnique(t *testing.T) {
 	second.IdempotencyKey = "shared-key"
 	err := repo.Create(ctx, second)
 	require.Error(t, err, "duplicate idempotency_key must be rejected")
+}
+
+// --- ClaimForProcessing ---------------------------------------------------
+
+// seedAtStatus persists a notification, then forces it into the requested
+// status with a raw UPDATE (bypassing the FSM). Used by ClaimForProcessing
+// tests to exercise every source state without walking the use-case chain.
+func seedAtStatus(t *testing.T, repo *postgres.NotificationRepository, pool *pgxpool.Pool, id domain.NotificationID, target domain.Status) *domain.Notification {
+	t.Helper()
+	ctx := context.Background()
+	n := makeIntegrationNotification(t, id)
+	require.NoError(t, repo.Create(ctx, n))
+	if target != domain.StatusPending {
+		_, err := pool.Exec(ctx, `UPDATE notifications SET status = $2 WHERE id = $1`, string(id), string(target))
+		require.NoError(t, err)
+		n.Status = target
+	}
+	return n
+}
+
+// TestClaimForProcessing_FromQueued: queued → processing, attempts++,
+// returned entity reflects the new state.
+func TestClaimForProcessing_FromQueued(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("10"), domain.StatusQueued)
+
+	claimAt := fixedIntegrationNow.Add(time.Second)
+	claimed, err := repo.ClaimForProcessing(context.Background(), seeded.ID, claimAt)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+
+	require.Equal(t, domain.StatusProcessing, claimed.Status)
+	require.Equal(t, 1, claimed.Attempts, "attempts++ on claim")
+	require.True(t, claimed.UpdatedAt.Equal(claimAt))
+
+	// And the row in the DB really moved.
+	stored, err := repo.Get(context.Background(), seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusProcessing, stored.Status)
+}
+
+// TestClaimForProcessing_FromRetrying: retrying is also a legal source —
+// MarkRetrying → reconciler/asynq → next claim runs against retrying.
+func TestClaimForProcessing_FromRetrying(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("11"), domain.StatusRetrying)
+
+	claimed, err := repo.ClaimForProcessing(context.Background(), seeded.ID, fixedIntegrationNow)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusProcessing, claimed.Status)
+}
+
+// TestClaimForProcessing_AlreadyClaimed_FromProcessing: another worker (or
+// a redelivery) already moved the notification into processing. Claim must
+// refuse with ErrAlreadyClaimed and leave the row untouched.
+func TestClaimForProcessing_AlreadyClaimed_FromProcessing(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("12"), domain.StatusProcessing)
+
+	_, err := repo.ClaimForProcessing(context.Background(), seeded.ID, fixedIntegrationNow)
+	require.ErrorIs(t, err, ports.ErrAlreadyClaimed)
+
+	// Row untouched.
+	stored, err := repo.Get(context.Background(), seeded.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusProcessing, stored.Status)
+	require.Equal(t, 0, stored.Attempts, "attempts must not change on failed claim")
+}
+
+// TestClaimForProcessing_AlreadyClaimed_FromDelivered: terminal state, claim
+// must refuse.
+func TestClaimForProcessing_AlreadyClaimed_FromDelivered(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("13"), domain.StatusDelivered)
+
+	_, err := repo.ClaimForProcessing(context.Background(), seeded.ID, fixedIntegrationNow)
+	require.ErrorIs(t, err, ports.ErrAlreadyClaimed)
+}
+
+// TestClaimForProcessing_AlreadyClaimed_FromPending: pending is not a valid
+// source — only the reconciler can move pending → queued, and only queued
+// or retrying may be claimed.
+func TestClaimForProcessing_AlreadyClaimed_FromPending(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	seeded := seedAtStatus(t, repo, pool, integrationNotificationID("14"), domain.StatusPending)
+
+	_, err := repo.ClaimForProcessing(context.Background(), seeded.ID, fixedIntegrationNow)
+	require.ErrorIs(t, err, ports.ErrAlreadyClaimed)
+}
+
+// TestClaimForProcessing_NotFound: unknown id surfaces ErrNotFound, not
+// ErrAlreadyClaimed. The distinction matters to the worker — NotFound is
+// a bug (queue payload references a missing row), AlreadyClaimed is a
+// benign race.
+func TestClaimForProcessing_NotFound(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	_, err := repo.ClaimForProcessing(context.Background(), integrationNotificationID("ff"), fixedIntegrationNow)
+	require.ErrorIs(t, err, ports.ErrNotFound)
 }
