@@ -43,6 +43,13 @@ type Config struct {
 
 	// --- tracing ----------------------------------------------------
 	OTLPEndpoint string // empty → no-op tracer
+
+	// --- metrics endpoint (worker / reconciler) ---------------------
+	// MetricsAddr is the listen address for a tiny http.Server that
+	// exposes /metrics. The api already serves /metrics on HTTPAddr;
+	// the worker and reconciler use this knob to surface their own
+	// registries to Prometheus.
+	MetricsAddr string
 }
 
 // Load reads every env var defined above with sensible defaults and
@@ -59,6 +66,7 @@ func Load() (Config, error) {
 		WebhookProviderURL:   getString("WEBHOOK_PROVIDER_URL", ""),
 		WebhookProviderToken: getString("WEBHOOK_PROVIDER_TOKEN", ""),
 		OTLPEndpoint:         getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		MetricsAddr:          getString("METRICS_ADDR", ":9090"),
 	}
 
 	var err error

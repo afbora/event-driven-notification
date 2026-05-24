@@ -9,15 +9,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goredis "github.com/redis/go-redis/v9"
 
 	hibikenasynq "github.com/hibiken/asynq"
@@ -125,6 +129,30 @@ func run() error {
 
 	mux := hibikenasynq.NewServeMux()
 	processor.Register(mux)
+
+	// --- metrics endpoint ----------------------------------------------
+	// A tiny HTTP server exposes /metrics so Prometheus can scrape
+	// the worker's registry. Lives on cfg.MetricsAddr (default
+	// :9090) — separate from any application HTTP listener because
+	// the worker has none.
+	metricsMux := nethttp.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	metricsSrv := &nethttp.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("worker metrics endpoint listening", "addr", cfg.MetricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
+			slog.Error("worker metrics server stopped", "error", err.Error())
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutCtx)
+	}()
 
 	// asynq runs its own signal handler; we use rootCtx as a
 	// best-effort kill switch and rely on srv.Shutdown for graceful

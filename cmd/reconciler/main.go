@@ -10,12 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	hibikenasynq "github.com/hibiken/asynq"
 
@@ -26,6 +30,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 )
 
@@ -66,6 +71,29 @@ func run() error {
 
 	queue := asynqadapter.NewQueue(hibikenasynq.RedisClientOpt{Addr: cfg.RedisAddr})
 	defer func() { _ = queue.Close() }()
+
+	promRegistry := prometheus.NewRegistry()
+	promRegistry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	_ = metrics.New(promRegistry) // reserve future emit points; registers Go + process baselines now
+
+	metricsMux := nethttp.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	metricsSrv := &nethttp.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("reconciler metrics endpoint listening", "addr", cfg.MetricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
+			slog.Error("reconciler metrics server stopped", "error", err.Error())
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutCtx)
+	}()
 
 	uc := application.NewReconcileStuckNotifications(
 		notifRepo, logRepo, queue,
