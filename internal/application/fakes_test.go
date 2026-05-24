@@ -340,6 +340,78 @@ func (q *fakeQueue) Cancel(_ context.Context, id domain.NotificationID) error {
 	return nil
 }
 
+// --- TemplateRepository --------------------------------------------------
+
+type fakeTemplateRepo struct {
+	mu    sync.Mutex
+	store map[domain.TemplateID]*domain.Template
+}
+
+func newFakeTemplateRepo() *fakeTemplateRepo {
+	return &fakeTemplateRepo{store: make(map[domain.TemplateID]*domain.Template)}
+}
+
+func (r *fakeTemplateRepo) Create(_ context.Context, t *domain.Template) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.store[t.ID] = t
+	return nil
+}
+
+func (r *fakeTemplateRepo) Get(_ context.Context, id domain.TemplateID) (*domain.Template, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.store[id]
+	if !ok {
+		return nil, ports.ErrNotFound
+	}
+	copied := *t
+	return &copied, nil
+}
+
+func (r *fakeTemplateRepo) GetByName(_ context.Context, name string) (*domain.Template, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.store {
+		if t.Name == name {
+			copied := *t
+			return &copied, nil
+		}
+	}
+	return nil, ports.ErrNotFound
+}
+
+func (r *fakeTemplateRepo) List(_ context.Context, _ int) ([]*domain.Template, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Template, 0, len(r.store))
+	for _, t := range r.store {
+		copied := *t
+		out = append(out, &copied)
+	}
+	return out, nil
+}
+
+func (r *fakeTemplateRepo) Update(_ context.Context, t *domain.Template) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.store[t.ID]; !ok {
+		return ports.ErrNotFound
+	}
+	r.store[t.ID] = t
+	return nil
+}
+
+func (r *fakeTemplateRepo) Delete(_ context.Context, id domain.TemplateID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.store[id]; !ok {
+		return ports.ErrNotFound
+	}
+	delete(r.store, id)
+	return nil
+}
+
 // --- Provider -------------------------------------------------------------
 
 type providerCall struct {
