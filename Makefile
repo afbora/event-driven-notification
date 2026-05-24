@@ -26,6 +26,7 @@ DATABASE_URL   ?= postgres://notification:notification@localhost:5432/notificati
         build clean \
         test test-race test-integration test-e2e \
         coverage coverage-unit coverage-integration coverage-e2e coverage-all coverage-html \
+        load-test load-test-baseline load-test-burst load-test-rate-limit \
         lint lint-fix \
         sqlc openapi \
         migrate-up migrate-down migrate-create \
@@ -144,3 +145,21 @@ run-worker: ## Run the worker binary directly via `go run` against local service
 
 run-reconciler: ## Run the reconciler binary directly via `go run` against local services.
 	go run ./cmd/reconciler
+
+# --- Load tests ------------------------------------------------------------
+# k6 runs in its own container against the api service. All three
+# scenarios require the main compose stack to be up first
+# (`docker compose up -d`).
+
+LOADTEST_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.loadtest.yml --profile loadtest
+
+load-test-baseline: ## k6 baseline scenario — 300 rps for 60s.
+	$(LOADTEST_COMPOSE) run --rm k6 run /scripts/baseline.js
+
+load-test-burst: ## k6 burst scenario — 1000 rps for 10s, then idle 50s.
+	$(LOADTEST_COMPOSE) run --rm k6 run /scripts/burst.js
+
+load-test-rate-limit: ## k6 rate-limit scenario — 200 rps to a single channel.
+	$(LOADTEST_COMPOSE) run --rm k6 run /scripts/rate_limit.js
+
+load-test: load-test-baseline load-test-burst load-test-rate-limit ## Run every k6 scenario in sequence.
