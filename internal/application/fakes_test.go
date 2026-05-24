@@ -90,6 +90,11 @@ type fakeNotificationRepo struct {
 	mu        sync.Mutex
 	store     map[domain.NotificationID]*domain.Notification
 	createErr error // optional injection
+
+	// List behavior — primed via SetListResult; calls accumulate in listCalls.
+	listCalls  []listCallParams
+	listResult []*domain.Notification
+	nextCursor string
 }
 
 func newFakeNotificationRepo() *fakeNotificationRepo {
@@ -143,8 +148,27 @@ func (r *fakeNotificationRepo) UpdateStatus(_ context.Context, n *domain.Notific
 	return nil
 }
 
-func (r *fakeNotificationRepo) List(_ context.Context, _ ports.NotificationFilter, _ string, _ int) ([]*domain.Notification, string, error) {
-	return nil, "", errFakeNotImplemented
+// listCallParams captures every parameter set passed to List so tests can
+// assert that the use case translated its input correctly.
+type listCallParams struct {
+	Filter ports.NotificationFilter
+	Cursor string
+	Limit  int
+}
+
+// SetListResult primes the next List call's return values.
+func (r *fakeNotificationRepo) SetListResult(items []*domain.Notification, nextCursor string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.listResult = items
+	r.nextCursor = nextCursor
+}
+
+func (r *fakeNotificationRepo) List(_ context.Context, filter ports.NotificationFilter, cursor string, limit int) ([]*domain.Notification, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.listCalls = append(r.listCalls, listCallParams{Filter: filter, Cursor: cursor, Limit: limit})
+	return r.listResult, r.nextCursor, nil
 }
 
 func (r *fakeNotificationRepo) FindOrphanedPending(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
