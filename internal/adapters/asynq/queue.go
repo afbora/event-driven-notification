@@ -7,9 +7,18 @@ import (
 	"time"
 
 	hibikenasynq "github.com/hibiken/asynq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/afbora/event-driven-notification/internal/domain"
 )
+
+// tracerName is the otel.Tracer key the queue uses. Production sets
+// the global provider via internal/infrastructure/tracing.Setup; the
+// no-op default makes these spans free when tracing is off.
+const tracerName = "github.com/afbora/event-driven-notification/internal/adapters/asynq"
 
 // queueNames is the fixed set of priority queues the adapter targets.
 // Cancel scans each one because the caller does not know which priority
@@ -55,11 +64,21 @@ func (q *Queue) Close() error {
 // the 24-hour uniqueness window are rejected at the queue layer
 // (CLAUDE.md §3.9, second layer).
 func (q *Queue) Enqueue(ctx context.Context, notificationID domain.NotificationID, priority domain.Priority, idempotencyKey string) error {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "queue.enqueue",
+		trace.WithAttributes(
+			attributeNotificationID(notificationID),
+			attributePriority(priority),
+		),
+	)
+	defer span.End()
+
 	task, opts, err := NewProcessNotificationTask(notificationID, priority, idempotencyKey)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("build task: %w", err)
 	}
 	if _, err := q.client.EnqueueContext(ctx, task, opts...); err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("enqueue notification %s: %w", notificationID, err)
 	}
 	return nil
@@ -71,15 +90,37 @@ func (q *Queue) Enqueue(ctx context.Context, notificationID domain.NotificationI
 // are typically created by a deliberate API call rather than a retry — the
 // caller is in charge of de-duplication.
 func (q *Queue) EnqueueScheduled(ctx context.Context, notificationID domain.NotificationID, priority domain.Priority, at time.Time) error {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "queue.enqueue.scheduled",
+		trace.WithAttributes(
+			attributeNotificationID(notificationID),
+			attributePriority(priority),
+			attribute.String("notification.scheduled_at", at.Format(time.RFC3339)),
+		),
+	)
+	defer span.End()
+
 	task, opts, err := NewProcessNotificationTask(notificationID, priority, "")
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("build scheduled task: %w", err)
 	}
 	opts = append(opts, hibikenasynq.ProcessAt(at))
 	if _, err := q.client.EnqueueContext(ctx, task, opts...); err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("enqueue scheduled notification %s: %w", notificationID, err)
 	}
 	return nil
+}
+
+// attributeNotificationID is a small helper so every span across the
+// asynq adapter uses the same attribute key for the notification id.
+func attributeNotificationID(id domain.NotificationID) attribute.KeyValue {
+	return attribute.String("notification.id", string(id))
+}
+
+// attributePriority is the matching helper for the priority label.
+func attributePriority(p domain.Priority) attribute.KeyValue {
+	return attribute.String("notification.priority", string(p))
 }
 
 // Cancel removes any pending or scheduled task for the notification. This

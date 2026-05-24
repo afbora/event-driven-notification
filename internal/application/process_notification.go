@@ -6,9 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/afbora/event-driven-notification/internal/domain"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
+
+// tracerName is the otel.Tracer key the worker use case uses. Spans
+// are no-ops until the global TracerProvider is configured by
+// internal/infrastructure/tracing.Setup.
+const tracerName = "github.com/afbora/event-driven-notification/internal/application"
 
 // Retry policy constants. CLAUDE.md §5 specifies 5 attempts with exponential
 // backoff (30s * 2^(attempt-1) + jitter). Jitter is omitted here so the
@@ -100,7 +109,19 @@ func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificati
 		return uc.rescheduleForRateLimit(ctx, claimed)
 	}
 
-	result := uc.provider.Send(ctx, claimed.Channel, claimed.Recipient, claimed.Content)
+	providerCtx, providerSpan := otel.Tracer(tracerName).Start(ctx, "provider.send",
+		trace.WithAttributes(
+			attribute.String("notification.id", string(claimed.ID)),
+			attribute.String("notification.channel", string(claimed.Channel)),
+		),
+	)
+	result := uc.provider.Send(providerCtx, claimed.Channel, claimed.Recipient, claimed.Content)
+	providerSpan.SetAttributes(
+		attribute.Bool("provider.success", result.Success),
+		attribute.Bool("provider.retryable", result.Retryable),
+	)
+	providerSpan.End()
+
 	if uc.metrics != nil {
 		uc.metrics.NotificationAttempt(string(claimed.Channel), attemptOutcome(result))
 	}
