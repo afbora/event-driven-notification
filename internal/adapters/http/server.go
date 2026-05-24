@@ -67,11 +67,29 @@ type DeleteTemplateExecutor func(ctx context.Context, in application.DeleteTempl
 // dependency (Postgres ping, Redis ping); tests inject closures.
 type ReadinessCheck func(ctx context.Context) error
 
+// JSONMetricsSnapshot is the small, JSON-friendly subset of the
+// Prometheus exposition data that /api/v1/metrics returns. Used by
+// clients that cannot consume Prometheus text format (dashboards,
+// ad-hoc scripts). SuccessRate is a pointer so the provider can
+// explicitly signal "no data this window" instead of an ambiguous 0.
+type JSONMetricsSnapshot struct {
+	CreatedPerMinute   int
+	DeliveredPerMinute int
+	FailedPerMinute    int
+	QueueDepth         int
+	SuccessRate        *float64
+}
+
+// JSONMetricsProvider returns one snapshot per scrape. Production wires
+// a Prometheus-querying provider (or an inline counter aggregation);
+// tests inject a closure.
+type JSONMetricsProvider func(ctx context.Context) (JSONMetricsSnapshot, error)
+
 // ServerOptions bundles the per-operation executors the Server needs.
-// Each operation has its own slot so partial wiring is legal — an
-// operation without an executor falls through to the embedded
-// unimplementedServer and returns 501. Tasks 9-22 in phase 4 add the
-// remaining executors as their handlers ship.
+// Each operation has its own slot so partial wiring is legal — every
+// handler method on Server begins with a nil-check on its executor
+// and returns ErrNotImplemented (→ 501) when absent. Production
+// composes the full set; tests inject only what they exercise.
 type ServerOptions struct {
 	CreateNotification   CreateNotificationExecutor
 	CreateBatch          CreateBatchExecutor
@@ -96,19 +114,20 @@ type ServerOptions struct {
 	// prometheus.DefaultGatherer (or a custom registry); leave nil and
 	// the endpoint falls through to 501 via the embedded stub.
 	PrometheusGatherer prometheus.Gatherer
+
+	// JSONMetrics returns the snapshot rendered by /api/v1/metrics.
+	JSONMetrics JSONMetricsProvider
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
-// dispatching each operation to its application use case. The
-// embedded unimplementedServer satisfies every method of the
-// generated interface so Server compiles even when only one operation
-// is overridden — the test seam each phase 4 task uses.
+// dispatching each operation to its application use case. Every handler
+// method begins with a nil-check on its executor and returns
+// ErrNotImplemented (→ 501) when absent — tests wire only the slots
+// they exercise.
 //
 // Concurrency: Server holds only constructor-injected references; it
 // is safe to share across goroutines once NewServer returns.
 type Server struct {
-	unimplementedServer
-
 	createNotification   CreateNotificationExecutor
 	createBatch          CreateBatchExecutor
 	getNotification      GetNotificationExecutor
@@ -125,11 +144,12 @@ type Server struct {
 
 	readinessChecks    []ReadinessCheck
 	prometheusGatherer prometheus.Gatherer
+	jsonMetrics        JSONMetricsProvider
 }
 
-// NewServer wires the executors carried by opts into a Server. The
-// embedded unimplementedServer is zero-value so any operation whose
-// executor is nil falls through to a 501 response.
+// NewServer wires the executors carried by opts into a Server. Any
+// operation whose executor is nil falls through to a 501 response —
+// the nil-check lives in each handler method.
 func NewServer(opts ServerOptions) *Server {
 	return &Server{
 		createNotification:   opts.CreateNotification,
@@ -146,5 +166,6 @@ func NewServer(opts ServerOptions) *Server {
 		deleteTemplate:       opts.DeleteTemplate,
 		readinessChecks:      opts.ReadinessChecks,
 		prometheusGatherer:   opts.PrometheusGatherer,
+		jsonMetrics:          opts.JSONMetrics,
 	}
 }
