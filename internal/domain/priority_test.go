@@ -53,7 +53,7 @@ func TestNewPriority(t *testing.T) {
 }
 
 // TestPriority_String confirms the canonical lowercase representation; this
-// is what gets persisted, embedded in queue payloads, and serialised in API
+// is what gets persisted, embedded in queue payloads, and serialized in API
 // responses.
 func TestPriority_String(t *testing.T) {
 	cases := map[domain.Priority]string{
