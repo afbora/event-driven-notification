@@ -81,7 +81,9 @@ type Harness struct {
 type HarnessOption func(*harnessConfig)
 
 type harnessConfig struct {
-	inboundRateLimit int
+	inboundRateLimit     int
+	outboundRateLimit    int
+	outboundRateLimitFor time.Duration
 }
 
 // WithInboundRateLimit overrides the harness's default inbound rate
@@ -90,6 +92,16 @@ type harnessConfig struct {
 // verify the production 60 req/min cap end-to-end.
 func WithInboundRateLimit(limit int) HarnessOption {
 	return func(c *harnessConfig) { c.inboundRateLimit = limit }
+}
+
+// WithOutboundRateLimit overrides the worker's per-channel outbound
+// cap. Tests pass a long window (60s+) so the assertion stays
+// deterministic regardless of how long the test itself runs.
+func WithOutboundRateLimit(limit int, window time.Duration) HarnessOption {
+	return func(c *harnessConfig) {
+		c.outboundRateLimit = limit
+		c.outboundRateLimitFor = window
+	}
 }
 
 // NewHarness brings up the full stack. The supplied ctx is used for
@@ -103,7 +115,11 @@ func WithInboundRateLimit(limit int) HarnessOption {
 func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harness {
 	t.Helper()
 
-	cfg := harnessConfig{inboundRateLimit: 100000}
+	cfg := harnessConfig{
+		inboundRateLimit:     100000,
+		outboundRateLimit:    100,
+		outboundRateLimitFor: time.Second,
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -127,7 +143,7 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 	// the cap via WithInboundRateLimit to assert the 429 behavior
 	// end-to-end.
 	inboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, cfg.inboundRateLimit, time.Minute)
-	outboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, 100, time.Second)
+	outboundLimiter := redisadapter.NewOutboundRateLimiter(redisClient, cfg.outboundRateLimit, cfg.outboundRateLimitFor)
 	broadcaster := redisadapter.NewStatusBroadcaster(redisClient)
 
 	queue := asynqadapter.NewQueue(hibikenasynq.RedisClientOpt{Addr: redisAddr})
