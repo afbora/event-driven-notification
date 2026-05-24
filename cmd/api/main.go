@@ -42,6 +42,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/clock"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
 
 	hibikenasynq "github.com/hibiken/asynq"
 )
@@ -58,7 +59,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	configureLogger(cfg.LogLevel)
+	logger.Install(logger.Config{Level: cfg.LogLevel, Service: "api"})
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -200,22 +201,4 @@ func run() error {
 	}
 	slog.Info("api stopped cleanly")
 	return nil
-}
-
-// configureLogger installs a JSON slog handler at the requested level
-// as the global default — every package's slog.* call follows.
-func configureLogger(level string) {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
-	slog.SetDefault(slog.New(h))
 }
