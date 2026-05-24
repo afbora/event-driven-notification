@@ -46,7 +46,7 @@ var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 // Status; callers must respect the FSM defined in status.go.
 type Notification struct {
 	ID             NotificationID
-	BatchID        *NotificationID // pointer = optional
+	BatchID        *BatchID // pointer = optional; set by Batch.NewBatch
 	IdempotencyKey string
 	CorrelationID  string
 
@@ -72,7 +72,7 @@ type Notification struct {
 // template feature ships).
 type NewNotificationInput struct {
 	ID             NotificationID
-	BatchID        *NotificationID
+	BatchID        *BatchID
 	IdempotencyKey string
 	CorrelationID  string
 
