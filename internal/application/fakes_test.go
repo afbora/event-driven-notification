@@ -130,8 +130,24 @@ func (r *fakeNotificationRepo) Get(_ context.Context, id domain.NotificationID) 
 // will exercise them. Returning errFakeNotImplemented makes accidental
 // reliance loud.
 
-func (r *fakeNotificationRepo) ClaimForProcessing(_ context.Context, _ domain.NotificationID, _ time.Time) (*domain.Notification, error) {
-	return nil, errFakeNotImplemented
+func (r *fakeNotificationRepo) ClaimForProcessing(_ context.Context, id domain.NotificationID, now time.Time) (*domain.Notification, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.store[id]
+	if !ok {
+		return nil, ports.ErrNotFound
+	}
+	// Only queued or retrying notifications can be claimed; everything else
+	// (including processing — would be a redelivery race) is rejected with
+	// ErrAlreadyClaimed.
+	if n.Status != domain.StatusQueued && n.Status != domain.StatusRetrying {
+		return nil, ports.ErrAlreadyClaimed
+	}
+	if err := n.MarkProcessing(now); err != nil {
+		return nil, err
+	}
+	copied := *n
+	return &copied, nil
 }
 
 func (r *fakeNotificationRepo) UpdateStatus(_ context.Context, n *domain.Notification, expectedSource domain.Status) error {
@@ -288,5 +304,73 @@ func (q *fakeQueue) Cancel(_ context.Context, id domain.NotificationID) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.cancelled = append(q.cancelled, id)
+	return nil
+}
+
+// --- Provider -------------------------------------------------------------
+
+type providerCall struct {
+	Channel   domain.Channel
+	Recipient string
+	Content   string
+}
+
+type fakeProvider struct {
+	mu     sync.Mutex
+	calls  []providerCall
+	result domain.DeliveryResult
+}
+
+func newFakeProvider(result domain.DeliveryResult) *fakeProvider {
+	return &fakeProvider{result: result}
+}
+
+func (p *fakeProvider) Send(_ context.Context, channel domain.Channel, recipient, content string) domain.DeliveryResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, providerCall{Channel: channel, Recipient: recipient, Content: content})
+	return p.result
+}
+
+// --- RateLimiter ----------------------------------------------------------
+
+type fakeRateLimiter struct {
+	mu         sync.Mutex
+	buckets    []string
+	allowed    bool
+	retryAfter time.Duration
+}
+
+func newFakeRateLimiter(allowed bool) *fakeRateLimiter {
+	return &fakeRateLimiter{allowed: allowed}
+}
+
+func (l *fakeRateLimiter) Allow(_ context.Context, bucket string) (bool, time.Duration, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buckets = append(l.buckets, bucket)
+	return l.allowed, l.retryAfter, nil
+}
+
+// --- StatusBroadcaster ----------------------------------------------------
+
+type broadcastEntry struct {
+	NotificationID domain.NotificationID
+	Status         domain.Status
+}
+
+type fakeStatusBroadcaster struct {
+	mu       sync.Mutex
+	messages []broadcastEntry
+}
+
+func newFakeStatusBroadcaster() *fakeStatusBroadcaster {
+	return &fakeStatusBroadcaster{}
+}
+
+func (b *fakeStatusBroadcaster) Publish(_ context.Context, id domain.NotificationID, status domain.Status) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.messages = append(b.messages, broadcastEntry{NotificationID: id, Status: status})
 	return nil
 }
