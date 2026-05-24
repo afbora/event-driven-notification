@@ -4,7 +4,7 @@ package application_test
 // Use cases under test inject these in place of real adapters; assertions
 // poke at the public fields (store, entries, items) directly.
 //
-// CLAUDE.md §6 favours hand-written fakes over generated mocks: small, clear,
+// CLAUDE.md §6 favors hand-written fakes over generated mocks: small, clear,
 // and immune to reflection surprises. These live in fakes_test.go so every
 // use-case test file in the application_test package can share them.
 
