@@ -559,7 +559,21 @@ This section is the most important one for you, Claude Code. Read it twice.
 
 ### 13.3 When You Are Done With A Task
 
-Surface to the human:
+**First, verify locally.** Before surfacing any commit, run the appropriate check set and include the result (pass/fail summary) in the surface so the human sees the green signal:
+
+- For `feat` / `refactor` / `fix` commits — run the full triplet, all three must succeed before surfacing:
+  ```bash
+  go build ./...
+  go test ./...
+  golangci-lint run ./...
+  ```
+  If any check fails, fix it first; do not push the breakage onto the human.
+
+- For `test` commits in the TDD red phase — run `go test ./...` only and explicitly note that the build is expected to fail (the implementation hasn't landed yet). Skip `golangci-lint` because the package will not compile.
+
+- For `docs` / `chore` / `ci` commits — run whichever subset is meaningful (e.g. `docker compose config --quiet` for a compose change, the `make help` listing for a Makefile change). Use judgement; the goal is "no surprises after the human commits."
+
+**Then surface to the human:**
 
 1. **What changed:** files added, modified, deleted, with a one-line reason each.
 2. **What was tested:** which tests were added, which existing tests still pass.

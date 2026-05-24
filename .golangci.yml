@@ -29,6 +29,12 @@ linters:
       min-complexity: 15
     misspell:
       locale: US
+      ignore-rules:
+        # `cancelled` is the project-wide canonical spelling for the cancelled
+        # notification status — CLAUDE.md §3.10/§3.11/§10 and every ADR use it.
+        # We override misspell here rather than switching the whole codebase to
+        # `canceled`, because the choice is deliberate, not accidental.
+        - cancelled
 
   exclusions:
     rules:
