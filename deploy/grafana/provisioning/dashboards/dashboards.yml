@@ -1,0 +1,22 @@
+# Grafana dashboard provisioning — Phase 6 task 15.
+#
+# Tells Grafana to load every JSON file under /etc/grafana/dashboards
+# at startup. `foldersFromFilesStructure: false` keeps everything in
+# the same UI folder; flip to true to mirror nested directories.
+# `allowUiUpdates: true` so an operator can iterate live without
+# losing their changes on restart (the JSON files remain the canonical
+# source committed to git).
+
+apiVersion: 1
+
+providers:
+  - name: notifications
+    orgId: 1
+    folder: 'Notifications'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

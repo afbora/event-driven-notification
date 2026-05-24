@@ -1,0 +1,89 @@
+{
+  "title": "Notification System — HTTP API Performance",
+  "uid": "notifications-api",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "tags": ["notifications", "http", "api"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests per second — by endpoint",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum by (path) (rate(http_requests_total[1m]))", "legendFormat": "{{path}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 2,
+      "title": "Error rate per endpoint (5xx + 4xx)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(http_requests_total{status=~\"4..|5..\"}[5m])) / clamp_min(sum by (path) (rate(http_requests_total[5m])), 1)",
+          "legendFormat": "{{path}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 } }
+    },
+    {
+      "id": 3,
+      "title": "HTTP request latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))", "legendFormat": "p50 {{path}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))", "legendFormat": "p95 {{path}}", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path))", "legendFormat": "p99 {{path}}", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "4xx vs 5xx breakdown",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{status=~\"4..\"}[1m]))", "legendFormat": "4xx", "refId": "A" },
+        { "expr": "sum(rate(http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx", "refId": "B" },
+        { "expr": "sum(rate(http_requests_total{status=~\"2..\"}[1m]))", "legendFormat": "2xx", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 5,
+      "title": "Inbound rate limit hits per minute",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (endpoint) (rate(inbound_rate_limit_hits_total[1m])) * 60",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Request status code share (last 5m)",
+      "type": "piechart",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum by (status) (increase(http_requests_total[5m]))", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    }
+  ]
+}

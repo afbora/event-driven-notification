@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	hibikenasynq "github.com/hibiken/asynq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/afbora/event-driven-notification/internal/application"
 	"github.com/afbora/event-driven-notification/internal/domain"
@@ -43,15 +45,26 @@ func (p *Processor) Register(mux *hibikenasynq.ServeMux) {
 // (a non-nil error from the use case triggers asynq to re-schedule with
 // exponential backoff, up to MaxRetry attempts).
 func (p *Processor) HandleProcessNotification(ctx context.Context, t *hibikenasynq.Task) error {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "queue.dequeue")
+	defer span.End()
+
 	var payload ProcessNotificationPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("unmarshal process notification payload: %w", err)
 	}
 	if payload.NotificationID == "" {
-		return fmt.Errorf("process notification: empty notification id in payload")
+		err := fmt.Errorf("process notification: empty notification id in payload")
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
+	span.SetAttributes(attributeNotificationID(domain.NotificationID(payload.NotificationID)))
 
-	return p.process(ctx, application.ProcessNotificationInput{
+	if err := p.process(ctx, application.ProcessNotificationInput{
 		NotificationID: domain.NotificationID(payload.NotificationID),
-	})
+	}); err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }

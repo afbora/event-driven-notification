@@ -1,0 +1,142 @@
+{
+  "title": "Notification System — Overview",
+  "uid": "notifications-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "tags": ["notifications", "business"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Notifications created (24h total)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(increase(notifications_created_total[24h]))", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 2,
+      "title": "Delivered (24h total)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(increase(notifications_delivered_total[24h]))", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Failed (24h total)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(increase(notifications_failed_total[24h]))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Active WebSocket clients",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "max(notifications_websocket_clients)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Delivery success rate per channel",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (channel) (rate(notifications_delivered_total[5m])) / clamp_min(sum by (channel) (rate(notifications_delivered_total[5m]) + rate(notifications_failed_total[5m])), 1)",
+          "legendFormat": "{{channel}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 6,
+      "title": "Queue depth (live)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "notifications_queue_depth", "legendFormat": "{{queue}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Throughput — created vs delivered (per minute)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(notifications_created_total[1m])) * 60",   "legendFormat": "created/min",   "refId": "A" },
+        { "expr": "sum(rate(notifications_delivered_total[1m])) * 60", "legendFormat": "delivered/min", "refId": "B" },
+        { "expr": "sum(rate(notifications_failed_total[1m])) * 60",    "legendFormat": "failed/min",    "refId": "C" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Processing latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(notifications_processing_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(notifications_processing_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(notifications_processing_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 9,
+      "title": "Circuit breaker states",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "description": "0 = closed, 1 = open, 2 = half-open",
+      "targets": [
+        { "expr": "notifications_circuit_breaker_state", "legendFormat": "{{provider}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 2 } }
+    },
+    {
+      "id": 10,
+      "title": "DLQ size — failures attributable to retry exhaustion",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (reason) (increase(notifications_failed_total{reason=~\"retries_exhausted|worker_timeout|permanent|unspecified\"}[1h]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

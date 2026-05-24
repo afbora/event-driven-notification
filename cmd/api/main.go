@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	asynqadapter "github.com/afbora/event-driven-notification/internal/adapters/asynq"
 	httpadapter "github.com/afbora/event-driven-notification/internal/adapters/http"
@@ -42,6 +43,9 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/clock"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 
 	hibikenasynq "github.com/hibiken/asynq"
 )
@@ -58,10 +62,24 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	configureLogger(cfg.LogLevel)
+	logger.Install(logger.Config{Level: cfg.LogLevel, Service: "api"})
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing: no-op when OTEL_EXPORTER_OTLP_ENDPOINT is empty.
+	traceShutdown, err := tracing.Setup(rootCtx, tracing.Config{
+		ServiceName: "api",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = traceShutdown(shutCtx)
+	}()
 
 	// --- pg + redis -----------------------------------------------------
 	pool, err := pgxpool.New(rootCtx, cfg.DatabaseURL)
@@ -82,6 +100,7 @@ func run() error {
 	wallClock := clock.New()
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	appMetrics := metrics.New(registry)
 
 	// --- repositories + adapters ---------------------------------------
 	notifRepo := pgadapter.NewNotificationRepository(pool)
@@ -96,8 +115,8 @@ func run() error {
 	inboundLimiter := redisadapter.NewOutboundRateLimiter(redis, cfg.InboundRateLimit, cfg.InboundRateWindow)
 
 	// --- application use cases -----------------------------------------
-	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, asynqQueue, idGen, wallClock)
-	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, asynqQueue, idGen, wallClock)
+	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, asynqQueue, idGen, wallClock, appMetrics)
+	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, asynqQueue, idGen, wallClock, appMetrics)
 	getNotif := application.NewGetNotification(notifRepo)
 	listNotifs := application.NewListNotifications(notifRepo)
 	cancelNotif := application.NewCancelNotification(notifRepo, logRepo, asynqQueue, idGen, wallClock)
@@ -110,7 +129,7 @@ func run() error {
 	deleteTmpl := application.NewDeleteTemplate(tmplRepo)
 
 	// --- websocket -----------------------------------------------------
-	hub := wsadapter.NewHub()
+	hub := wsadapter.NewHubWithMetrics(appMetrics)
 	wsConsumer := wsadapter.NewConsumer(redis, hub)
 	consumerCtx, cancelConsumer := context.WithCancel(rootCtx)
 	defer cancelConsumer()
@@ -150,6 +169,7 @@ func run() error {
 	router := httpadapter.NewRouter(httpadapter.Config{
 		Middlewares: []func(nethttp.Handler) nethttp.Handler{
 			httpadapter.CorrelationIDMiddleware(idGen),
+			httpadapter.MetricsMiddleware(appMetrics),
 			httpadapter.InboundRateLimitMiddleware(inboundLimiter),
 			httpadapter.IdempotencyMiddleware(idempStore),
 		},
@@ -168,9 +188,13 @@ func run() error {
 	router.Handle("/api/v1/ws/notifications", httpadapter.NewWebSocketHandler(hub))
 	httpadapter.MountDocs(router)
 
+	// otelhttp wraps the router so every inbound request gets a
+	// span — even when the global provider is no-op the spans are
+	// cheap, so this stays on by default.
+	tracedHandler := otelhttp.NewHandler(router, "api")
 	httpServer := &nethttp.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           router,
+		Handler:           tracedHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -200,22 +224,4 @@ func run() error {
 	}
 	slog.Info("api stopped cleanly")
 	return nil
-}
-
-// configureLogger installs a JSON slog handler at the requested level
-// as the global default — every package's slog.* call follows.
-func configureLogger(level string) {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
-	slog.SetDefault(slog.New(h))
 }

@@ -6,9 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/afbora/event-driven-notification/internal/domain"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
+
+// tracerName is the otel.Tracer key the worker use case uses. Spans
+// are no-ops until the global TracerProvider is configured by
+// internal/infrastructure/tracing.Setup.
+const tracerName = "github.com/afbora/event-driven-notification/internal/application"
 
 // Retry policy constants. CLAUDE.md §5 specifies 5 attempts with exponential
 // backoff (30s * 2^(attempt-1) + jitter). Jitter is omitted here so the
@@ -40,9 +49,11 @@ type ProcessNotification struct {
 	broadcaster ports.StatusBroadcaster
 	idGen       ports.IDGenerator
 	clock       ports.Clock
+	metrics     MetricsRecorder
 }
 
-// NewProcessNotification wires the dependencies. Every port is required.
+// NewProcessNotification wires the dependencies. Every port is
+// required except metricsRec — tests pass nil to skip emit.
 func NewProcessNotification(
 	repo ports.NotificationRepository,
 	logRepo ports.NotificationLogRepository,
@@ -51,6 +62,7 @@ func NewProcessNotification(
 	broadcaster ports.StatusBroadcaster,
 	idGen ports.IDGenerator,
 	clock ports.Clock,
+	metricsRec MetricsRecorder,
 ) *ProcessNotification {
 	return &ProcessNotification{
 		repo:        repo,
@@ -60,6 +72,7 @@ func NewProcessNotification(
 		broadcaster: broadcaster,
 		idGen:       idGen,
 		clock:       clock,
+		metrics:     metricsRec,
 	}
 }
 
@@ -75,7 +88,8 @@ func NewProcessNotification(
 //   - Apply the DeliveryResult: delivered, failed (permanent or retries
 //     exhausted), or retrying with exponential backoff.
 func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificationInput) error {
-	claimed, err := uc.repo.ClaimForProcessing(ctx, in.NotificationID, uc.clock.Now())
+	start := uc.clock.Now()
+	claimed, err := uc.repo.ClaimForProcessing(ctx, in.NotificationID, start)
 	if err != nil {
 		if errors.Is(err, ports.ErrAlreadyClaimed) {
 			return nil // no-op — another worker won the claim race
@@ -95,13 +109,53 @@ func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificati
 		return uc.rescheduleForRateLimit(ctx, claimed)
 	}
 
-	result := uc.provider.Send(ctx, claimed.Channel, claimed.Recipient, claimed.Content)
-	return uc.applyResult(ctx, claimed, result)
+	providerCtx, providerSpan := otel.Tracer(tracerName).Start(ctx, "provider.send",
+		trace.WithAttributes(
+			attribute.String("notification.id", string(claimed.ID)),
+			attribute.String("notification.channel", string(claimed.Channel)),
+		),
+	)
+	result := uc.provider.Send(providerCtx, claimed.Channel, claimed.Recipient, claimed.Content)
+	providerSpan.SetAttributes(
+		attribute.Bool("provider.success", result.Success),
+		attribute.Bool("provider.retryable", result.Retryable),
+	)
+	providerSpan.End()
+
+	if uc.metrics != nil {
+		uc.metrics.NotificationAttempt(string(claimed.Channel), attemptOutcome(result))
+	}
+	return uc.applyResult(ctx, claimed, result, start)
+}
+
+// attemptOutcome maps a DeliveryResult onto the three labels the
+// notifications_attempts_total counter exposes.
+func attemptOutcome(result domain.DeliveryResult) string {
+	switch {
+	case result.Success:
+		return "success"
+	case result.Retryable:
+		return "transient"
+	default:
+		return "permanent"
+	}
 }
 
 // applyResult maps the provider response onto the state machine.
-func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notification, result domain.DeliveryResult) error {
+// start is when the worker first claimed the notification — used to
+// stamp the processing-duration histogram.
+func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, start time.Time) error {
 	now := uc.clock.Now()
+
+	// Every terminal branch records a processing-duration sample so
+	// p99 / p95 dashboards capture even retries that eventually
+	// failed. Sampled here (not in Execute) because the rate-limit
+	// path returns earlier without a provider call.
+	defer func() {
+		if uc.metrics != nil {
+			uc.metrics.ObserveProcessing(string(n.Channel), now.Sub(start))
+		}
+	}()
 
 	switch {
 	case result.Success:
@@ -110,6 +164,9 @@ func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notifi
 		}
 		if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
 			return fmt.Errorf("update status (delivered): %w", err)
+		}
+		if uc.metrics != nil {
+			uc.metrics.NotificationDelivered(string(n.Channel))
 		}
 		return uc.recordEvent(ctx, n, domain.LogEventDelivered)
 
@@ -120,6 +177,13 @@ func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notifi
 		}
 		if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
 			return fmt.Errorf("update status (failed): %w", err)
+		}
+		if uc.metrics != nil {
+			reason := result.Reason
+			if reason == "" {
+				reason = "unspecified"
+			}
+			uc.metrics.NotificationFailed(string(n.Channel), reason)
 		}
 		return uc.recordEvent(ctx, n, domain.LogEventFailed)
 

@@ -9,13 +9,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goredis "github.com/redis/go-redis/v9"
 
 	hibikenasynq "github.com/hibiken/asynq"
@@ -31,6 +37,9 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/clock"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 )
 
 func main() {
@@ -45,10 +54,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	configureLogger(cfg.LogLevel)
+	logger.Install(logger.Config{Level: cfg.LogLevel, Service: "worker"})
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	traceShutdown, err := tracing.Setup(rootCtx, tracing.Config{
+		ServiceName: "worker",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	// --- pg + redis -----------------------------------------------------
 	pool, err := pgxpool.New(rootCtx, cfg.DatabaseURL)
@@ -63,6 +81,9 @@ func run() error {
 	// --- shared singletons ---------------------------------------------
 	idGen := id.New()
 	wallClock := clock.New()
+	promRegistry := prometheus.NewRegistry()
+	promRegistry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	appMetrics := metrics.New(promRegistry)
 
 	// --- repositories + adapters ---------------------------------------
 	notifRepo := pgadapter.NewNotificationRepository(pool)
@@ -89,6 +110,7 @@ func run() error {
 		notifRepo, logRepo,
 		guardedProvider, outboundLimiter, broadcaster,
 		idGen, wallClock,
+		appMetrics,
 	)
 
 	// --- asynq server --------------------------------------------------
@@ -107,6 +129,30 @@ func run() error {
 
 	mux := hibikenasynq.NewServeMux()
 	processor.Register(mux)
+
+	// --- metrics endpoint ----------------------------------------------
+	// A tiny HTTP server exposes /metrics so Prometheus can scrape
+	// the worker's registry. Lives on cfg.MetricsAddr (default
+	// :9090) — separate from any application HTTP listener because
+	// the worker has none.
+	metricsMux := nethttp.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	metricsSrv := &nethttp.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("worker metrics endpoint listening", "addr", cfg.MetricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
+			slog.Error("worker metrics server stopped", "error", err.Error())
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutCtx)
+	}()
 
 	// asynq runs its own signal handler; we use rootCtx as a
 	// best-effort kill switch and rely on srv.Shutdown for graceful
@@ -153,20 +199,4 @@ func breakerSettings(name string) gobreaker.Settings {
 		Name:        name,
 		MaxRequests: 1,
 	}
-}
-
-func configureLogger(level string) {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
-	slog.SetDefault(slog.New(h))
 }

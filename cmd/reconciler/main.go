@@ -10,12 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	hibikenasynq "github.com/hibiken/asynq"
 
@@ -25,6 +29,9 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/clock"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 )
 
 func main() {
@@ -39,10 +46,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	configureLogger(cfg.LogLevel)
+	logger.Install(logger.Config{Level: cfg.LogLevel, Service: "reconciler"})
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	traceShutdown, err := tracing.Setup(rootCtx, tracing.Config{
+		ServiceName: "reconciler",
+		Endpoint:    cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	pool, err := pgxpool.New(rootCtx, cfg.DatabaseURL)
 	if err != nil {
@@ -55,6 +71,29 @@ func run() error {
 
 	queue := asynqadapter.NewQueue(hibikenasynq.RedisClientOpt{Addr: cfg.RedisAddr})
 	defer func() { _ = queue.Close() }()
+
+	promRegistry := prometheus.NewRegistry()
+	promRegistry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	_ = metrics.New(promRegistry) // reserve future emit points; registers Go + process baselines now
+
+	metricsMux := nethttp.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	metricsSrv := &nethttp.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("reconciler metrics endpoint listening", "addr", cfg.MetricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
+			slog.Error("reconciler metrics server stopped", "error", err.Error())
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutCtx)
+	}()
 
 	uc := application.NewReconcileStuckNotifications(
 		notifRepo, logRepo, queue,
@@ -96,20 +135,4 @@ func runOnce(ctx context.Context, uc *application.ReconcileStuckNotifications) {
 		"overdue_retrying_reenqueued", out.OverdueRetryingReenqueued,
 		"orphaned_pending_reenqueued", out.OrphanedPendingReenqueued,
 	)
-}
-
-func configureLogger(level string) {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
-	slog.SetDefault(slog.New(h))
 }

@@ -1,5 +1,135 @@
-# Prometheus alert rules — phase 1 skeleton.
-# Concrete rules (HighQueueDepth, WorkerProcessingStalled, etc.) arrive in
-# phase 6 task 9 alongside RUNBOOK.md entries.
+# Prometheus alert rules — CLAUDE.md §12.5 catalog.
+#
+# Every alert here has a matching entry in docs/RUNBOOK.md
+# (Phase 6 task 16). Severity routing happens in alertmanager.yml:
+# critical → webhook-critical receiver, warning → webhook-warning.
+#
+# Convention:
+#   - `for` is set on every rule so a single flap does not page.
+#   - `annotations.summary` is a one-line operator-facing description.
+#   - `annotations.runbook_url` points at the RUNBOOK.md anchor.
+#
+# Production swap-in: replace the webhook receivers in
+# alertmanager.yml with Slack / PagerDuty / email; no rule changes
+# needed.
 
-groups: []
+groups:
+  - name: critical
+    interval: 30s
+    rules:
+      - alert: HighQueueDepth
+        expr: max(notifications_queue_depth) > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notification queue depth above 10k for 5m — workers cannot drain."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#highqueuedepth"
+
+      - alert: WorkerProcessingStalled
+        expr: rate(notifications_delivered_total[5m]) == 0 and rate(notifications_failed_total[5m]) == 0 and max(notifications_queue_depth) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zero notification throughput for 5m despite non-empty queue — workers are stalled."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#workerprocessingstalled"
+
+      - alert: ReconcilerNotRunning
+        expr: absent(up{job="reconciler"}) or max(up{job="reconciler"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reconciler scrape target missing — stuck notifications will never be swept."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#reconcilernotrunning"
+
+      - alert: HighFailureRate
+        expr: |
+          sum(rate(notifications_failed_total[5m]))
+            / clamp_min(sum(rate(notifications_delivered_total[5m]) + rate(notifications_failed_total[5m])), 1)
+          > 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notification failure rate above 50% for 5m — provider or upstream regression."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#highfailurerate"
+
+      - alert: DLQGrowthRate
+        expr: rate(notifications_failed_total{reason=~"retries_exhausted|worker_timeout"}[1m]) * 60 > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dead-letter pile growing > 100/min — incoming traffic is overwhelming retry."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#dlqgrowthrate"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          (go_sql_stats_open_connections{job=~"api|worker|reconciler"}
+            / on(job) group_left() go_sql_stats_max_open_connections{job=~"api|worker|reconciler"})
+          > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres connection pool above 90% capacity for 5m — backpressure imminent."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#databaseconnectionpoolexhausted"
+
+      - alert: RedisUnreachable
+        expr: max(up{job=~"api|worker|reconciler"}) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All app instances down for 1m — Redis or pg may be unreachable."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#redisunreachable"
+
+  - name: warning
+    interval: 30s
+    rules:
+      - alert: HighProcessingLatency
+        expr: histogram_quantile(0.99, sum(rate(notifications_processing_duration_seconds_bucket[10m])) by (le)) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notification processing p99 above 30s for 10m — provider or DB latency."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#highprocessinglatency"
+
+      - alert: CircuitBreakerOpen
+        expr: max(notifications_circuit_breaker_state) == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider circuit breaker open for 5m — downstream is sick."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#circuitbreakeropen"
+
+      - alert: InboundRateLimitFrequentlyHit
+        expr: sum(rate(inbound_rate_limit_hits_total[1m])) * 60 > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inbound rate limit hit > 100/min for 10m — abuse or undersized cap."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#inboundratelimitfrequentlyhit"
+
+      - alert: OutboundRateLimitFrequentlyHit
+        expr: sum(rate(outbound_rate_limit_hits_total[1m])) * 60 > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound rate limit hit > 10/min for 10m — channel cap may need raising."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#outboundratelimitfrequentlyhit"
+
+      - alert: StuckProcessingDetected
+        expr: increase(notifications_failed_total{reason="worker_timeout"}[5m]) > 10
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reconciler marked > 10 notifications as worker_timeout in 5m — worker crashes likely."
+          runbook_url: "https://github.com/afbora/event-driven-notification/blob/main/docs/RUNBOOK.md#stuckprocessingdetected"

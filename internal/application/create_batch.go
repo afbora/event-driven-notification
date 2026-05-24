@@ -41,9 +41,11 @@ type CreateBatch struct {
 	queue     ports.Queue
 	idGen     ports.IDGenerator
 	clock     ports.Clock
+	metrics   MetricsRecorder
 }
 
-// NewCreateBatch wires the dependencies. Every port is required.
+// NewCreateBatch wires the dependencies. Every port is required
+// except metricsRec — tests pass nil and the emit is skipped.
 func NewCreateBatch(
 	batchRepo ports.BatchRepository,
 	notifRepo ports.NotificationRepository,
@@ -51,6 +53,7 @@ func NewCreateBatch(
 	queue ports.Queue,
 	idGen ports.IDGenerator,
 	clock ports.Clock,
+	metricsRec MetricsRecorder,
 ) *CreateBatch {
 	return &CreateBatch{
 		batchRepo: batchRepo,
@@ -59,6 +62,7 @@ func NewCreateBatch(
 		queue:     queue,
 		idGen:     idGen,
 		clock:     clock,
+		metrics:   metricsRec,
 	}
 }
 
@@ -114,6 +118,9 @@ func (uc *CreateBatch) Execute(ctx context.Context, in CreateBatchInput) (*domai
 		}
 		if err := uc.recordQueued(ctx, n, now); err != nil {
 			return nil, err
+		}
+		if uc.metrics != nil {
+			uc.metrics.NotificationCreated(string(n.Channel), string(n.Priority))
 		}
 	}
 

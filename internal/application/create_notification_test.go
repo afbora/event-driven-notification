@@ -30,7 +30,7 @@ func newCreateNotification(t *testing.T) (
 	queue := newFakeQueue()
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
-	uc := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock)
+	uc := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock, nil)
 	return uc, repo, logRepo, queue, idGen
 }
 

@@ -1,0 +1,142 @@
+{
+  "title": "Notification System — Worker & Queue Health",
+  "uid": "notifications-worker",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "tags": ["notifications", "worker", "queue"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Worker instances active",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "count(up{job=\"worker\"} == 1)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Tasks dequeued per minute (delivered + failed + retried)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(notifications_attempts_total[1m])) * 60", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Retry count (last hour)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(notifications_attempts_total{outcome=\"transient\"}[1h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Reconciler passes per minute",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "description": "Heartbeat — non-zero means the reconciler is alive and sweeping.",
+      "targets": [
+        { "expr": "rate(go_gc_duration_seconds_count{job=\"reconciler\"}[1m]) * 60", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Attempt outcomes per channel",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (channel, outcome) (rate(notifications_attempts_total[5m]))",
+          "legendFormat": "{{channel}}/{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Provider call latency per channel",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (channel, le) (rate(notifications_processing_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{channel}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (channel, le) (rate(notifications_processing_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{channel}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7,
+      "title": "DLQ inspection — failed reason breakdown (last hour)",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (channel, reason) (increase(notifications_failed_total[1h]))",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Outbound rate limit hits per minute (per channel)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (channel) (rate(outbound_rate_limit_hits_total[1m])) * 60",
+          "legendFormat": "{{channel}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Queue depth per priority",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "notifications_queue_depth", "legendFormat": "{{queue}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Circuit breaker state per provider",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "description": "0 = closed, 1 = open, 2 = half-open.",
+      "targets": [
+        { "expr": "notifications_circuit_breaker_state", "legendFormat": "{{provider}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 2 } }
+    }
+  ]
+}

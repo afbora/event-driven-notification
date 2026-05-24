@@ -36,6 +36,14 @@ type Client interface {
 	Send(msg StatusUpdate) error
 }
 
+// MetricsRecorder is the slim port the Hub uses to publish the
+// active-client gauge. Defined here (not in internal/ports) because
+// the Hub owns the contract it consumes — production wires
+// *infrastructure/metrics.Metrics, tests pass a stub or nil.
+type MetricsRecorder interface {
+	SetWebSocketClients(count int)
+}
+
 // Hub tracks which clients want which notification ids and fans broadcasts
 // out to them. The two maps are kept in lock-step: subscribers is the
 // primary lookup for Broadcast; clientSubs is the reverse index used by
@@ -48,9 +56,13 @@ type Hub struct {
 
 	// client id → (notification id → present)
 	clientSubs map[string]map[domain.NotificationID]struct{}
+
+	// metrics is optional; nil skips emits.
+	metrics MetricsRecorder
 }
 
 // NewHub returns an empty hub ready for Subscribe / Broadcast calls.
+// No metrics emission — use NewHubWithMetrics to opt in.
 func NewHub() *Hub {
 	return &Hub{
 		subscribers: make(map[domain.NotificationID]map[string]Client),
@@ -58,13 +70,20 @@ func NewHub() *Hub {
 	}
 }
 
+// NewHubWithMetrics returns a Hub that emits the active-client
+// gauge to rec on every Subscribe / UnsubscribeAll transition.
+// Pass nil to opt out — equivalent to NewHub().
+func NewHubWithMetrics(rec MetricsRecorder) *Hub {
+	h := NewHub()
+	h.metrics = rec
+	return h
+}
+
 // Subscribe registers interest in a notification id for the given client.
 // Duplicate calls for the same (client, notification) pair are no-ops —
 // the client does not get the message twice.
 func (h *Hub) Subscribe(client Client, notificationID domain.NotificationID) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	clients, ok := h.subscribers[notificationID]
 	if !ok {
 		clients = make(map[string]Client)
@@ -78,6 +97,12 @@ func (h *Hub) Subscribe(client Client, notificationID domain.NotificationID) {
 		h.clientSubs[client.ID()] = subs
 	}
 	subs[notificationID] = struct{}{}
+	count := len(h.clientSubs)
+	h.mu.Unlock()
+
+	if h.metrics != nil {
+		h.metrics.SetWebSocketClients(count)
+	}
 }
 
 // Unsubscribe removes one (client, notification) pair. Other subscriptions
@@ -94,14 +119,19 @@ func (h *Hub) Unsubscribe(client Client, notificationID domain.NotificationID) {
 // map from leaking dead client references.
 func (h *Hub) UnsubscribeAll(client Client) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	subs, ok := h.clientSubs[client.ID()]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	for notifID := range subs {
 		h.removeLocked(client.ID(), notifID)
+	}
+	count := len(h.clientSubs)
+	h.mu.Unlock()
+
+	if h.metrics != nil {
+		h.metrics.SetWebSocketClients(count)
 	}
 }
 
