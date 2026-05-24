@@ -1,0 +1,20 @@
+meta {
+  name: Get Notification
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/notifications/{{notificationId}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Fetch a single notification by id. Returns 404 with an RFC 7807 problem
+  body when the id is unknown.
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Cancel Notification
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{BASE_URL}}/api/v1/notifications/{{notificationId}}/cancel
+  body: none
+  auth: none
+}
+
+headers {
+  Idempotency-Key: {{idempotencyKey}}
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Moves a pending/queued/retrying notification to the cancelled state.
+  Returns 409 if the notification has already reached a terminal state.
+}

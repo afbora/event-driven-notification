@@ -1,0 +1,20 @@
+meta {
+  name: Delete Template
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{BASE_URL}}/api/v1/templates/{{templateId}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Removes a template. Returns 409 when a notification still references it
+  — the FK constraint at the DB is the ultimate source of truth.
+}

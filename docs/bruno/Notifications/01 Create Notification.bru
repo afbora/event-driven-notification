@@ -1,0 +1,32 @@
+meta {
+  name: Create Notification
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{BASE_URL}}/api/v1/notifications
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Idempotency-Key: {{idempotencyKey}}
+  X-Correlation-ID: {{correlationId}}
+}
+
+body:json {
+  {
+    "channel": "sms",
+    "recipient": "+15555550001",
+    "content": "Your verification code is 123456",
+    "priority": "high"
+  }
+}
+
+docs {
+  Enqueues a single notification for asynchronous delivery. Returns 202 with
+  the new resource and a Location header. Reuse the same Idempotency-Key to
+  see the cached response on a duplicate call.
+}

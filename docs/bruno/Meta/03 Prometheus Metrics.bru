@@ -1,0 +1,17 @@
+meta {
+  name: Prometheus Metrics
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{BASE_URL}}/metrics
+  body: none
+  auth: none
+}
+
+docs {
+  Standard Prometheus exposition format. Internal teams point Prometheus
+  at this URL (compose wires it up). Human-readable: every metric carries
+  a # HELP and # TYPE comment.
+}

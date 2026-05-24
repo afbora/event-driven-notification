@@ -1,0 +1,17 @@
+meta {
+  name: Healthz Ready
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{BASE_URL}}/healthz/ready
+  body: none
+  auth: none
+}
+
+docs {
+  Readiness probe. 200 only when every configured downstream dependency
+  (Postgres, Redis) is reachable; a single failure flips the response to
+  503 and Kubernetes stops routing traffic.
+}

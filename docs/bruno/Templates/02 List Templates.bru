@@ -1,0 +1,25 @@
+meta {
+  name: List Templates
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/templates?limit=50
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: 50
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  Cursor-paginated template list. Channel and cursor query params are
+  accepted; cursor pagination support lands in a follow-up that extends
+  the repository port.
+}

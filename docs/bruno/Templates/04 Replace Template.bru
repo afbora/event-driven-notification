@@ -1,0 +1,30 @@
+meta {
+  name: Replace Template
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{BASE_URL}}/api/v1/templates/{{templateId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Idempotency-Key: {{idempotencyKey}}
+  X-Correlation-ID: {{correlationId}}
+}
+
+body:json {
+  {
+    "name": "welcome-sms",
+    "channel": "sms",
+    "body": "Hello {{.Name}}, glad to have you back!"
+  }
+}
+
+docs {
+  PUT semantics: every field in the request replaces the existing value.
+  CreatedAt is preserved server-side; UpdatedAt is bumped.
+}

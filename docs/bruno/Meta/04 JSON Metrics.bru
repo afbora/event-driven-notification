@@ -1,0 +1,21 @@
+meta {
+  name: JSON Metrics
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/metrics
+  body: none
+  auth: none
+}
+
+headers {
+  X-Correlation-ID: {{correlationId}}
+}
+
+docs {
+  JSON-shaped subset of /metrics for clients that cannot consume the
+  Prometheus text format. SuccessRate is an explicit pointer — a nil
+  means "no traffic in the window", never an ambiguous 0.
+}
