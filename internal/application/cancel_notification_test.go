@@ -30,7 +30,7 @@ func newCancelNotification(t *testing.T) (
 
 // seedNotificationInStatus creates a fresh notification and walks it through
 // the FSM to the requested target, then stuffs it into the fake repo. The
-// helper centralises the setup so individual tests read like "given a
+// helper centralizes the setup so individual tests read like "given a
 // notification in status X, when we cancel, then ...".
 func seedNotificationInStatus(t *testing.T, repo *fakeNotificationRepo, id domain.NotificationID, target domain.Status) *domain.Notification {
 	t.Helper()
@@ -128,7 +128,7 @@ func TestCancelNotification_NotFound(t *testing.T) {
 	require.Empty(t, queue.cancelled)
 }
 
-// TestCancelNotification_TerminalRejected: cancelling a delivered notification
+// TestCancelNotification_TerminalRejected: canceling a delivered notification
 // must surface ErrInvalidTransition (terminal states reject every outgoing
 // edge per the FSM). No side effects on a domain rejection.
 func TestCancelNotification_TerminalRejected(t *testing.T) {

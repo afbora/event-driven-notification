@@ -113,7 +113,12 @@ func (r *fakeNotificationRepo) Get(_ context.Context, id domain.NotificationID) 
 	if !ok {
 		return nil, ports.ErrNotFound
 	}
-	return n, nil
+	// Shallow copy so use cases mutating the returned pointer (e.g. n.Cancel)
+	// do not retroactively change the value stored in the fake — production
+	// repositories return a freshly-scanned struct from the database, and
+	// tests rely on that semantics for concurrency checks like UpdateStatus.
+	copied := *n
+	return &copied, nil
 }
 
 // The methods below are not used by CreateNotification; later use-case tests
