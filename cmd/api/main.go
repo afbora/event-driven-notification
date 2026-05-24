@@ -44,6 +44,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 
 	hibikenasynq "github.com/hibiken/asynq"
@@ -99,6 +100,7 @@ func run() error {
 	wallClock := clock.New()
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	appMetrics := metrics.New(registry)
 
 	// --- repositories + adapters ---------------------------------------
 	notifRepo := pgadapter.NewNotificationRepository(pool)
@@ -167,6 +169,7 @@ func run() error {
 	router := httpadapter.NewRouter(httpadapter.Config{
 		Middlewares: []func(nethttp.Handler) nethttp.Handler{
 			httpadapter.CorrelationIDMiddleware(idGen),
+			httpadapter.MetricsMiddleware(appMetrics),
 			httpadapter.InboundRateLimitMiddleware(inboundLimiter),
 			httpadapter.IdempotencyMiddleware(idempStore),
 		},
