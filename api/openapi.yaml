@@ -2,15 +2,27 @@ openapi: 3.0.3
 
 info:
   title: Notification System API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Event-driven notification system for SMS, Email, and Push channels.
 
-    **Phase 1 skeleton.** Only the health endpoint is defined here. The full
-    surface — notifications, batches, templates, cancellation, trace, metrics,
-    WebSocket upgrade — lands in phase 4 per `PLAN.md`. This file is the
-    spec-first source of truth: handler interfaces in `internal/adapters/http`
-    are generated from it via `oapi-codegen`.
+    This spec is the source of truth — handler interfaces in
+    `internal/adapters/http/api` are generated from it via `oapi-codegen`
+    (CLAUDE.md §13, `make openapi`). Editing handlers directly drifts the
+    contract; edit the spec, regenerate, then implement.
+
+    **Conventions:**
+      - Errors follow RFC 7807 Problem Details (`application/problem+json`).
+      - `Idempotency-Key` is honored on every write endpoint (POST, PATCH).
+      - `X-Correlation-ID` is read from the request and echoed in the
+        response; one id flows through all logs for that request.
+      - Cursor-based pagination on every list endpoint
+        (`next_cursor` / `prev_cursor`), opaque base64.
+
+    The WebSocket endpoint `GET /api/v1/ws/notifications` is not modeled
+    here — OpenAPI 3.0 does not natively describe WebSocket frames.
+    Subscription protocol is documented in `README.md` and exercised by
+    the end-to-end test suite.
   contact:
     name: Ahmet Bora
     url: https://github.com/afbora/event-driven-notification
@@ -23,46 +35,720 @@ servers:
     description: Local development (`docker compose up`).
 
 tags:
+  - name: Notifications
+    description: Create, query, cancel, and trace individual notifications.
+  - name: Batches
+    description: Bulk-create related notifications under a single business action.
+  - name: Templates
+    description: Reusable message templates for the three channels.
   - name: Meta
-    description: Health, version, and process-level checks.
+    description: Health checks and process-level metrics.
 
 paths:
-  /healthz:
+  # ----- Notifications -----------------------------------------------------
+  /api/v1/notifications:
+    post:
+      summary: Create a notification.
+      description: |
+        Persists the notification in `pending`, enqueues it for asynchronous
+        processing, and returns `202 Accepted`. The `Location` header points
+        at the resource. The notification is delivered asynchronously — poll
+        `GET /api/v1/notifications/{id}` or subscribe via WebSocket for the
+        terminal status.
+      operationId: createNotification
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNotificationRequest'
+      responses:
+        '202':
+          description: Accepted for processing.
+          headers:
+            Location:
+              schema: { type: string }
+              description: URI of the new notification resource.
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    get:
+      summary: List notifications.
+      description: |
+        Cursor-paginated list. Filters are AND-ed; omit a filter to widen
+        the scope. The `next_cursor` field in the response can be passed
+        back as `cursor` to fetch the next page.
+      operationId: listNotifications
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/Status' }
+        - name: channel
+          in: query
+          schema: { $ref: '#/components/schemas/Channel' }
+        - name: batch_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: created_after
+          in: query
+          schema: { type: string, format: date-time }
+        - name: created_before
+          in: query
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Opaque cursor returned by the previous page.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: A page of notifications.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/notifications/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NotificationID'
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      summary: Get a notification by id.
+      operationId: getNotification
+      tags: [Notifications]
+      responses:
+        '200':
+          description: The notification.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/notifications/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/NotificationID'
+      - $ref: '#/components/parameters/CorrelationID'
+    patch:
+      summary: Cancel a notification.
+      description: |
+        Transitions the notification to `cancelled`. Only allowed from
+        `pending`, `queued`, or `retrying` — terminal states return 409.
+      operationId: cancelNotification
+      tags: [Notifications]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The cancelled notification.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/notifications/{id}/trace:
+    parameters:
+      - $ref: '#/components/parameters/NotificationID'
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      summary: Get the full event trace for a notification.
+      description: |
+        Returns every status transition recorded for the notification,
+        ordered oldest first. Use this when support needs to understand
+        what happened to a single notification.
+      operationId: getNotificationTrace
+      tags: [Notifications]
+      responses:
+        '200':
+          description: The trace.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationTrace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ----- Batches -----------------------------------------------------------
+  /api/v1/notifications/batch:
+    post:
+      summary: Create a batch of notifications.
+      description: |
+        Persists every notification in the batch atomically and enqueues
+        them all under a shared `batch_id`. The whole batch shares one
+        correlation id — passed in `X-Correlation-ID` or generated.
+      operationId: createBatch
+      tags: [Batches]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBatchRequest' }
+      responses:
+        '202':
+          description: Batch accepted for processing.
+          headers:
+            Location:
+              schema: { type: string }
+              description: URI of the batch resource.
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Batch' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/notifications/batch/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BatchID'
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      summary: Get a batch by id with member notifications.
+      operationId: getBatch
+      tags: [Batches]
+      responses:
+        '200':
+          description: The batch and its notifications.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Batch' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ----- Templates ---------------------------------------------------------
+  /api/v1/templates:
+    post:
+      summary: Create a template.
+      operationId: createTemplate
+      tags: [Templates]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTemplateRequest' }
+      responses:
+        '201':
+          description: Template created.
+          headers:
+            Location:
+              schema: { type: string }
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Template' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    get:
+      summary: List templates.
+      operationId: listTemplates
+      tags: [Templates]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+        - name: channel
+          in: query
+          schema: { $ref: '#/components/schemas/Channel' }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: A page of templates.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TemplatePage' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/templates/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TemplateID'
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      summary: Get a template by id.
+      operationId: getTemplate
+      tags: [Templates]
+      responses:
+        '200':
+          description: The template.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Template' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    put:
+      summary: Replace a template.
+      operationId: replaceTemplate
+      tags: [Templates]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTemplateRequest' }
+      responses:
+        '200':
+          description: Updated template.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Template' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+    delete:
+      summary: Delete a template.
+      description: |
+        Only allowed when no notification references the template — the
+        DB enforces this with a FK constraint; the API returns 409 if
+        violated.
+      operationId: deleteTemplate
+      tags: [Templates]
+      responses:
+        '204':
+          description: Template deleted.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ----- Meta --------------------------------------------------------------
+  /healthz/live:
     get:
       summary: Liveness probe.
       description: |
-        Returns `200 OK` if the process is up and responding. Does **not**
-        verify database or queue connectivity — a future `/healthz/ready`
-        endpoint (phase 4) covers that.
-      operationId: getHealthz
+        Returns 200 if the process is running. Does NOT check downstream
+        services — Kubernetes uses this to decide whether to restart the
+        pod.
+      operationId: getHealthzLive
       tags: [Meta]
       responses:
         '200':
-          description: Service is alive.
+          description: Process is alive.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-              examples:
-                healthy:
-                  summary: Process is up.
-                  value:
-                    status: ok
-                    version: 0.1.0
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+  /healthz/ready:
+    get:
+      summary: Readiness probe.
+      description: |
+        Returns 200 only when downstream dependencies (Postgres, Redis)
+        are reachable. Kubernetes uses this to decide whether to route
+        traffic to the pod.
+      operationId: getHealthzReady
+      tags: [Meta]
+      responses:
+        '200':
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+        '503':
+          description: A required dependency is unavailable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /metrics:
+    get:
+      summary: Prometheus scrape endpoint.
+      description: |
+        Standard Prometheus exposition format. Internal teams point
+        Prometheus at this endpoint (`docker compose` wires it up).
+      operationId: getPrometheusMetrics
+      tags: [Meta]
+      responses:
+        '200':
+          description: Prometheus metrics.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/metrics:
+    get:
+      summary: JSON-friendly metric summary.
+      description: |
+        Same data as `/metrics` but in JSON — for clients that do not
+        speak Prometheus exposition format (dashboards, ad-hoc scripts).
+      operationId: getJSONMetrics
+      tags: [Meta]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationID'
+      responses:
+        '200':
+          description: Aggregated metrics.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricsSummary' }
 
 components:
+  # ----- Reusable parameters ----------------------------------------------
+  parameters:
+    NotificationID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Notification identifier (UUID).
+    BatchID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Batch identifier (UUID).
+    TemplateID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Template identifier (UUID).
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: |
+        Caller-supplied unique key (UUID v4 or ULID). Repeated requests
+        with the same key within 24 hours return the cached response
+        with status 200. Mandatory for production write traffic but
+        accepted as optional by the API for ergonomic test clients.
+    CorrelationID:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      schema: { type: string }
+      description: |
+        End-to-end request correlation id. Read from the header if
+        present; otherwise the server generates one and echoes it in
+        the response.
+
+  # ----- Reusable response headers ----------------------------------------
+  headers:
+    CorrelationID:
+      schema: { type: string }
+      description: The correlation id used to tag every log line for this request.
+
+  # ----- Reusable responses -----------------------------------------------
+  responses:
+    BadRequest:
+      description: Malformed request — see Problem body for details.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: Request validation failed at the domain level.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Conflicting state (e.g., already cancelled, FK violation).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Inbound rate limit exceeded — retry after the indicated seconds.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds the client should wait before retrying.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  # ----- Schemas ----------------------------------------------------------
   schemas:
+    Channel:
+      type: string
+      description: Delivery channel.
+      enum: [sms, email, push]
+    Priority:
+      type: string
+      description: Processing priority.
+      enum: [low, normal, high]
+    Status:
+      type: string
+      description: Notification lifecycle status.
+      enum: [pending, queued, processing, delivered, retrying, failed, cancelled]
+    LogEvent:
+      type: string
+      description: Trace event type.
+      enum: [created, queued, processing, delivered, retrying, failed, cancelled]
+
     HealthResponse:
       type: object
-      required:
-        - status
+      required: [status]
       properties:
         status:
           type: string
-          description: Process health status.
           enum: [ok, degraded]
-          example: ok
         version:
           type: string
-          description: Application version (semver).
-          example: 0.1.0
+
+    Problem:
+      type: object
+      description: RFC 7807 Problem Details (CLAUDE.md §3.5).
+      required: [title, status]
+      properties:
+        type:
+          type: string
+          description: URI reference identifying the problem category.
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        correlation_id:
+          type: string
+
+    Notification:
+      type: object
+      required:
+        - id
+        - channel
+        - recipient
+        - content
+        - status
+        - priority
+        - attempts
+        - max_attempts
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        correlation_id: { type: string }
+        batch_id: { type: string, format: uuid, nullable: true }
+        template_id: { type: string, format: uuid, nullable: true }
+        channel: { $ref: '#/components/schemas/Channel' }
+        recipient: { type: string }
+        content: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+        status: { $ref: '#/components/schemas/Status' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        attempts: { type: integer }
+        max_attempts: { type: integer }
+        next_retry_at: { type: string, format: date-time, nullable: true }
+        last_attempted_at: { type: string, format: date-time, nullable: true }
+        delivered_at: { type: string, format: date-time, nullable: true }
+        failed_at: { type: string, format: date-time, nullable: true }
+        cancelled_at: { type: string, format: date-time, nullable: true }
+        idempotency_key: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateNotificationRequest:
+      type: object
+      required: [channel, recipient, content]
+      properties:
+        channel: { $ref: '#/components/schemas/Channel' }
+        recipient: { type: string, description: 'Channel-specific address (E.164 phone, RFC 5322 email, device token).' }
+        content: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        template_id: { type: string, format: uuid }
+        template_variables:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+        scheduled_at: { type: string, format: date-time }
+        max_attempts: { type: integer, minimum: 1, maximum: 10 }
+
+    NotificationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Notification' }
+        next_cursor:
+          type: string
+          nullable: true
+        prev_cursor:
+          type: string
+          nullable: true
+
+    NotificationTraceEntry:
+      type: object
+      required: [id, event, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        event: { $ref: '#/components/schemas/LogEvent' }
+        correlation_id: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    NotificationTrace:
+      type: object
+      required: [notification_id, entries]
+      properties:
+        notification_id: { type: string, format: uuid }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/NotificationTraceEntry' }
+
+    CreateBatchRequest:
+      type: object
+      required: [notifications]
+      properties:
+        notifications:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/CreateNotificationRequest' }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Batch:
+      type: object
+      required: [id, size, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        correlation_id: { type: string }
+        size: { type: integer }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at: { type: string, format: date-time }
+        notifications:
+          type: array
+          items: { $ref: '#/components/schemas/Notification' }
+          description: Member notifications. Present in GET responses; omitted in POST 202 to keep the payload small.
+
+    CreateTemplateRequest:
+      type: object
+      required: [name, channel, body]
+      properties:
+        name:
+          type: string
+          description: Human-readable identifier; unique across all templates.
+        channel: { $ref: '#/components/schemas/Channel' }
+        body:
+          type: string
+          description: Template body. Variables are referenced as `{{.fieldName}}`.
+        variables:
+          type: array
+          items: { type: string }
+          description: Declared variable names — informational; rendering tolerates extras.
+
+    Template:
+      type: object
+      required: [id, name, channel, body, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        body: { type: string }
+        variables:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TemplatePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Template' }
+        next_cursor:
+          type: string
+          nullable: true
+        prev_cursor:
+          type: string
+          nullable: true
+
+    MetricsSummary:
+      type: object
+      description: |
+        Aggregated counts and rates over the last minute. The full data
+        set with per-channel breakdowns lives at `/metrics` in Prometheus
+        format.
+      properties:
+        created_per_minute: { type: integer }
+        delivered_per_minute: { type: integer }
+        failed_per_minute: { type: integer }
+        queue_depth: { type: integer }
+        success_rate:
+          type: number
+          format: double
+          description: Delivered / (delivered + failed) over the same minute. 0 when both are zero.
