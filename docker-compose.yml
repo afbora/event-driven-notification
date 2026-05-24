@@ -199,6 +199,8 @@ services:
       - "3001:3000"
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
     depends_on:
       - prometheus
     networks: [notification-net]

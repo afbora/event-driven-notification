@@ -1,0 +1,19 @@
+# Grafana datasource provisioning — Phase 6 task 11.
+#
+# Grafana auto-discovers this file on startup and registers the
+# Prometheus datasource without a click. The url points at the
+# compose service hostname; production deployments override via
+# GF_DATASOURCES_DEFAULT_URL or an environment-specific overlay.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
