@@ -4,6 +4,7 @@ import (
 	"context"
 	nethttp "net/http"
 
+	"github.com/afbora/event-driven-notification/internal/infrastructure/correlation"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
@@ -13,11 +14,6 @@ import (
 // blank, and echoes the resolved value in the response so the client
 // can correlate API calls with its own traces.
 const correlationIDHeader = "X-Correlation-ID"
-
-// correlationIDKey is the unexported context key under which the
-// resolved id is stored. A dedicated type prevents collisions with any
-// other package using a string key.
-type correlationIDKey struct{}
 
 // CorrelationIDMiddleware reads X-Correlation-ID from the inbound
 // request, generates a new id via gen when the header is missing or
@@ -39,30 +35,21 @@ func CorrelationIDMiddleware(gen ports.IDGenerator) func(nethttp.Handler) nethtt
 			}
 
 			w.Header().Set(correlationIDHeader, id)
-
-			ctx := context.WithValue(r.Context(), correlationIDKey{}, id)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(correlation.WithContext(r.Context(), id)))
 		})
 	}
 }
 
-// CorrelationIDFromContext returns the correlation id placed in ctx by
-// CorrelationIDMiddleware, or the empty string when no middleware ran
-// (which happens in unit tests of handlers and use cases). The helper
-// is total — callers do not need to check for absence; logging "" is
-// the harmless fallback.
+// CorrelationIDFromContext is a thin re-export of
+// correlation.FromContext kept for backward compatibility with
+// existing call sites in this adapter. New code should reach for the
+// infrastructure package directly.
 func CorrelationIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(correlationIDKey{}).(string)
-	return id
+	return correlation.FromContext(ctx)
 }
 
-// ContextWithCorrelationID returns a context derived from parent that
-// carries id under the same key CorrelationIDMiddleware uses. The
-// exported helper is for non-HTTP entry points — the worker decodes a
-// correlation id from its queue payload and seeds the context before
-// invoking application code, so logs from the worker side carry the
-// same id as the originating API request. Also used by tests that
-// need to set up a request context without driving the middleware.
+// ContextWithCorrelationID is the matching re-export of
+// correlation.WithContext.
 func ContextWithCorrelationID(parent context.Context, id string) context.Context {
-	return context.WithValue(parent, correlationIDKey{}, id)
+	return correlation.WithContext(parent, id)
 }
