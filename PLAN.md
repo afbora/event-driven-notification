@@ -140,7 +140,7 @@
 
 ### 2B — Ports
 
-19. `feat(ports): define Repository, Queue, Provider, IdempotencyStore, RateLimiter, StatusBroadcaster, Clock interfaces`
+19. `feat(ports): define Repository, Queue, Provider, IdempotencyStore, RateLimiter, StatusBroadcaster, IDGenerator, Clock interfaces`
 
 ### 2C — Application Layer (Use Cases)
 
