@@ -522,3 +522,134 @@ func TestList_InvalidCursor(t *testing.T) {
 	_, _, err := repo.List(context.Background(), ports.NotificationFilter{}, "not-a-real-cursor", 10)
 	require.Error(t, err)
 }
+
+// --- Reconciler queries (FOR UPDATE SKIP LOCKED) -------------------------
+
+// forceTimestamps rewrites created_at and/or updated_at for an existing row
+// so the reconciler-threshold tests can simulate "this row has been sitting
+// here a while". Either timestamp may be the zero value to leave untouched.
+func forceTimestamps(t *testing.T, pool *pgxpool.Pool, id domain.NotificationID, createdAt, updatedAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if !createdAt.IsZero() {
+		_, err := pool.Exec(ctx, `UPDATE notifications SET created_at = $2 WHERE id = $1`, string(id), createdAt)
+		require.NoError(t, err)
+	}
+	if !updatedAt.IsZero() {
+		_, err := pool.Exec(ctx, `UPDATE notifications SET updated_at = $2 WHERE id = $1`, string(id), updatedAt)
+		require.NoError(t, err)
+	}
+}
+
+// forceNextRetryAt sets next_retry_at directly (the reconciler retrying
+// query keys on this column).
+func forceNextRetryAt(t *testing.T, pool *pgxpool.Pool, id domain.NotificationID, nextRetryAt time.Time) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `UPDATE notifications SET next_retry_at = $2 WHERE id = $1`, string(id), nextRetryAt)
+	require.NoError(t, err)
+}
+
+// TestFindOrphanedPending_HappyPath: pending rows older than the threshold
+// are returned; recent pending and non-pending rows are not.
+func TestFindOrphanedPending_HappyPath(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	threshold := fixedIntegrationNow.Add(-5 * time.Minute)
+
+	// Old pending — returned.
+	seedTimestamped(t, repo, integrationNotificationID("60"), fixedIntegrationNow.Add(-10*time.Minute))
+
+	// Recent pending — too fresh, not returned.
+	seedTimestamped(t, repo, integrationNotificationID("61"), fixedIntegrationNow.Add(-1*time.Minute))
+
+	// Old queued — wrong status, not returned.
+	seedAtStatus(t, repo, pool, integrationNotificationID("62"), domain.StatusQueued)
+	forceTimestamps(t, pool, integrationNotificationID("62"), fixedIntegrationNow.Add(-10*time.Minute), time.Time{})
+
+	items, err := repo.FindOrphanedPending(ctx, threshold, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, integrationNotificationID("60"), items[0].ID)
+}
+
+// TestFindStuckProcessing_HappyPath: processing rows whose updated_at fell
+// behind the threshold are returned.
+func TestFindStuckProcessing_HappyPath(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	threshold := fixedIntegrationNow.Add(-5 * time.Minute)
+
+	// Stuck — claimed long ago, updated_at predates threshold.
+	seedAtStatus(t, repo, pool, integrationNotificationID("70"), domain.StatusProcessing)
+	forceTimestamps(t, pool, integrationNotificationID("70"), time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+
+	// Fresh processing — not stuck yet.
+	seedAtStatus(t, repo, pool, integrationNotificationID("71"), domain.StatusProcessing)
+	forceTimestamps(t, pool, integrationNotificationID("71"), time.Time{}, fixedIntegrationNow.Add(-1*time.Minute))
+
+	// Old delivered — terminal, never stuck.
+	seedAtStatus(t, repo, pool, integrationNotificationID("72"), domain.StatusDelivered)
+	forceTimestamps(t, pool, integrationNotificationID("72"), time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+
+	items, err := repo.FindStuckProcessing(ctx, threshold, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, integrationNotificationID("70"), items[0].ID)
+}
+
+// TestFindOverdueRetrying_HappyPath: retrying rows whose next_retry_at has
+// elapsed are returned.
+func TestFindOverdueRetrying_HappyPath(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	before := fixedIntegrationNow.Add(-1 * time.Minute)
+
+	// Overdue — next_retry_at in the past.
+	seedAtStatus(t, repo, pool, integrationNotificationID("80"), domain.StatusRetrying)
+	forceNextRetryAt(t, pool, integrationNotificationID("80"), fixedIntegrationNow.Add(-5*time.Minute))
+
+	// Still pending its scheduled retry.
+	seedAtStatus(t, repo, pool, integrationNotificationID("81"), domain.StatusRetrying)
+	forceNextRetryAt(t, pool, integrationNotificationID("81"), fixedIntegrationNow.Add(10*time.Minute))
+
+	// Retrying but next_retry_at NULL — not returned (would surface as a bug,
+	// reconciler skips it).
+	seedAtStatus(t, repo, pool, integrationNotificationID("82"), domain.StatusRetrying)
+
+	items, err := repo.FindOverdueRetrying(ctx, before, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, integrationNotificationID("80"), items[0].ID)
+}
+
+// TestReconcilerQueries_RespectLimit: limit caps the batch size.
+func TestReconcilerQueries_RespectLimit(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	// Seed 5 stuck-processing rows.
+	for i := 0; i < 5; i++ {
+		id := integrationNotificationID(fmt.Sprintf("9%d", i))
+		seedAtStatus(t, repo, pool, id, domain.StatusProcessing)
+		forceTimestamps(t, pool, id, time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+	}
+
+	items, err := repo.FindStuckProcessing(ctx, fixedIntegrationNow.Add(-5*time.Minute), 2)
+	require.NoError(t, err)
+	require.Len(t, items, 2, "limit must cap the result set")
+}
