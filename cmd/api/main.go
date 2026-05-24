@@ -129,7 +129,7 @@ func run() error {
 	deleteTmpl := application.NewDeleteTemplate(tmplRepo)
 
 	// --- websocket -----------------------------------------------------
-	hub := wsadapter.NewHub()
+	hub := wsadapter.NewHubWithMetrics(appMetrics)
 	wsConsumer := wsadapter.NewConsumer(redis, hub)
 	consumerCtx, cancelConsumer := context.WithCancel(rootCtx)
 	defer cancelConsumer()
