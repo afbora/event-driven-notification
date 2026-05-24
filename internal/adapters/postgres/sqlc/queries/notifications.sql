@@ -73,3 +73,36 @@ WHERE  (sqlc.narg('status')::text          IS NULL OR status   = sqlc.narg('stat
         OR (created_at, id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('row_limit');
+
+-- Reconciler queries (CLAUDE.md §3.11, ADR-0011). Each uses FOR UPDATE
+-- SKIP LOCKED so multiple reconciler instances can scan in parallel
+-- without conflicting claims — a row another reconciler has already
+-- locked is invisible to this query rather than blocking it.
+
+-- name: FindOrphanedPending :many
+SELECT *
+FROM   notifications
+WHERE  status      = 'pending'
+  AND  created_at  < sqlc.arg('older_than')
+ORDER BY created_at
+LIMIT sqlc.arg('row_limit')
+FOR UPDATE SKIP LOCKED;
+
+-- name: FindStuckProcessing :many
+SELECT *
+FROM   notifications
+WHERE  status      = 'processing'
+  AND  updated_at  < sqlc.arg('older_than')
+ORDER BY updated_at
+LIMIT sqlc.arg('row_limit')
+FOR UPDATE SKIP LOCKED;
+
+-- name: FindOverdueRetrying :many
+SELECT *
+FROM   notifications
+WHERE  status         = 'retrying'
+  AND  next_retry_at IS NOT NULL
+  AND  next_retry_at  < sqlc.arg('before_at')
+ORDER BY next_retry_at
+LIMIT sqlc.arg('row_limit')
+FOR UPDATE SKIP LOCKED;

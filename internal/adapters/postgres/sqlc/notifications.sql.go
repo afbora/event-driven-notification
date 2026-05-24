@@ -116,6 +116,168 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 	return err
 }
 
+const findOrphanedPending = `-- name: FindOrphanedPending :many
+
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM   notifications
+WHERE  status      = 'pending'
+  AND  created_at  < $1
+ORDER BY created_at
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
+
+type FindOrphanedPendingParams struct {
+	OlderThan pgtype.Timestamptz
+	RowLimit  int32
+}
+
+// Reconciler queries (CLAUDE.md §3.11, ADR-0011). Each uses FOR UPDATE
+// SKIP LOCKED so multiple reconciler instances can scan in parallel
+// without conflicting claims — a row another reconciler has already
+// locked is invisible to this query rather than blocking it.
+func (q *Queries) FindOrphanedPending(ctx context.Context, arg FindOrphanedPendingParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, findOrphanedPending, arg.OlderThan, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const findOverdueRetrying = `-- name: FindOverdueRetrying :many
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM   notifications
+WHERE  status         = 'retrying'
+  AND  next_retry_at IS NOT NULL
+  AND  next_retry_at  < $1
+ORDER BY next_retry_at
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
+
+type FindOverdueRetryingParams struct {
+	BeforeAt pgtype.Timestamptz
+	RowLimit int32
+}
+
+func (q *Queries) FindOverdueRetrying(ctx context.Context, arg FindOverdueRetryingParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, findOverdueRetrying, arg.BeforeAt, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const findStuckProcessing = `-- name: FindStuckProcessing :many
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM   notifications
+WHERE  status      = 'processing'
+  AND  updated_at  < $1
+ORDER BY updated_at
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
+
+type FindStuckProcessingParams struct {
+	OlderThan pgtype.Timestamptz
+	RowLimit  int32
+}
+
+func (q *Queries) FindStuckProcessing(ctx context.Context, arg FindStuckProcessingParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, findStuckProcessing, arg.OlderThan, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNotification = `-- name: GetNotification :one
 SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
 FROM notifications

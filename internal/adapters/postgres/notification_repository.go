@@ -221,6 +221,64 @@ func encodeCursor(t time.Time, id string) string {
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
+// FindOrphanedPending returns pending notifications whose created_at is
+// older than olderThan, capped at limit. CLAUDE.md §3.11: rows that sat in
+// pending past the threshold are the dual-write race recovery target —
+// the reconciler marks them queued and re-enqueues. FOR UPDATE SKIP LOCKED
+// lets multiple reconciler instances scan concurrently.
+func (r *NotificationRepository) FindOrphanedPending(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error) {
+	rows, err := r.q.FindOrphanedPending(ctx, sqlc.FindOrphanedPendingParams{
+		OlderThan: timeToTimestamptz(olderThan),
+		RowLimit:  int32(limit), //nolint:gosec // limit is operator-controlled, small
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find orphaned pending: %w", err)
+	}
+	return rowsToNotifications(rows)
+}
+
+// FindStuckProcessing returns processing notifications whose updated_at is
+// older than olderThan. These are worker crashes — the reconciler marks
+// them failed with reason worker_timeout.
+func (r *NotificationRepository) FindStuckProcessing(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error) {
+	rows, err := r.q.FindStuckProcessing(ctx, sqlc.FindStuckProcessingParams{
+		OlderThan: timeToTimestamptz(olderThan),
+		RowLimit:  int32(limit), //nolint:gosec
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find stuck processing: %w", err)
+	}
+	return rowsToNotifications(rows)
+}
+
+// FindOverdueRetrying returns retrying notifications whose next_retry_at is
+// in the past relative to beforeAt. The reconciler re-enqueues them so the
+// worker can re-attempt.
+func (r *NotificationRepository) FindOverdueRetrying(ctx context.Context, beforeAt time.Time, limit int) ([]*domain.Notification, error) {
+	rows, err := r.q.FindOverdueRetrying(ctx, sqlc.FindOverdueRetryingParams{
+		BeforeAt: timeToTimestamptz(beforeAt),
+		RowLimit: int32(limit), //nolint:gosec
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find overdue retrying: %w", err)
+	}
+	return rowsToNotifications(rows)
+}
+
+// rowsToNotifications converts a slice of sqlc rows into domain entities,
+// short-circuiting on the first conversion failure.
+func rowsToNotifications(rows []sqlc.Notification) ([]*domain.Notification, error) {
+	out := make([]*domain.Notification, 0, len(rows))
+	for _, row := range rows {
+		n, err := notificationFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // decodeCursor inverts encodeCursor. Any parse failure surfaces as a clean
 // error so the HTTP layer can drop the cursor and start a fresh page.
 func decodeCursor(s string) (time.Time, string, error) {
