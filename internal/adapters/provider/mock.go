@@ -111,6 +111,18 @@ func NewMockProvider(opts ...MockProviderOption) *MockProvider {
 	return p
 }
 
+// Configure re-applies options on an already-constructed MockProvider.
+// E2E tests share one provider across scenarios via the harness; this
+// lets each test reshape behavior (e.g. flip to always-fail-transient)
+// without rebuilding the full stack.
+func (p *MockProvider) Configure(opts ...MockProviderOption) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, opt := range opts {
+		opt(p)
+	}
+}
+
 // Send implements ports.Provider. The call is recorded, the configured
 // latency is observed (cut short on ctx cancellation), and a DeliveryResult
 // reflecting the configured success rate / failure mode is returned.
