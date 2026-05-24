@@ -3,7 +3,7 @@ package http_test
 import (
 	nethttp "net/http"
 	"net/http/httptest"
-	"sync/atomic"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,13 +56,12 @@ func TestNewRouter_RecoversFromPanic(t *testing.T) {
 // rate limit → idempotency → handler) and the caller proves it by
 // providing the slice in that order.
 func TestNewRouter_AppliesConfigMiddlewaresInOrder(t *testing.T) {
-	var calls []string
-	var mu atomicSlice
+	rec := &callRecorder{}
 
 	recorder := func(name string) func(nethttp.Handler) nethttp.Handler {
 		return func(next nethttp.Handler) nethttp.Handler {
 			return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, req *nethttp.Request) {
-				mu.append(name)
+				rec.append(name)
 				next.ServeHTTP(w, req)
 			})
 		}
@@ -77,7 +76,7 @@ func TestNewRouter_AppliesConfigMiddlewaresInOrder(t *testing.T) {
 	}
 	r := httpadapter.NewRouter(cfg)
 	r.Get("/x", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
-		mu.append("handler")
+		rec.append("handler")
 		w.WriteHeader(nethttp.StatusOK)
 	})
 
@@ -89,8 +88,7 @@ func TestNewRouter_AppliesConfigMiddlewaresInOrder(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, nethttp.StatusOK, resp.StatusCode)
 
-	calls = mu.snapshot()
-	require.Equal(t, []string{"a", "b", "c", "handler"}, calls,
+	require.Equal(t, []string{"a", "b", "c", "handler"}, rec.snapshot(),
 		"middlewares must run in the order supplied, then the handler")
 }
 
@@ -119,28 +117,26 @@ func TestNewRouter_NilMiddlewareSlotsAreSkipped(t *testing.T) {
 	})
 }
 
-// atomicSlice is a tiny thread-safe string slice for recording the
-// middleware call order without taking a real mutex (httptest may serve
-// concurrently if the test fans out).
-type atomicSlice struct {
-	v atomic.Value // []string
+// callRecorder is a tiny thread-safe string slice used to record the
+// middleware call order. httptest may serve requests concurrently and
+// the recorder is shared across middleware layers, so a mutex is the
+// simplest correct primitive — atomic.Value.CompareAndSwap cannot model
+// "first store from nil interface" without an extra branch.
+type callRecorder struct {
+	mu sync.Mutex
+	v  []string
 }
 
-func (a *atomicSlice) append(s string) {
-	for {
-		oldSlice, _ := a.v.Load().([]string)
-		newSlice := make([]string, len(oldSlice)+1)
-		copy(newSlice, oldSlice)
-		newSlice[len(oldSlice)] = s
-		if a.v.CompareAndSwap(oldSlice, newSlice) {
-			return
-		}
-	}
+func (r *callRecorder) append(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.v = append(r.v, s)
 }
 
-func (a *atomicSlice) snapshot() []string {
-	v, _ := a.v.Load().([]string)
-	out := make([]string, len(v))
-	copy(out, v)
+func (r *callRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.v))
+	copy(out, r.v)
 	return out
 }
