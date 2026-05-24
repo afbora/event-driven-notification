@@ -40,7 +40,7 @@ func validBatchInput(t *testing.T) domain.NewBatchInput {
 	}
 }
 
-// TestNewBatch exercises validation and the auto-set BatchID behaviour.
+// TestNewBatch exercises validation and the auto-set BatchID behavior.
 func TestNewBatch(t *testing.T) {
 	tests := []struct {
 		name    string
