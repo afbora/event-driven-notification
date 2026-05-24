@@ -124,8 +124,18 @@ func (r *fakeNotificationRepo) ClaimForProcessing(_ context.Context, _ domain.No
 	return nil, errFakeNotImplemented
 }
 
-func (r *fakeNotificationRepo) UpdateStatus(_ context.Context, _ *domain.Notification, _ domain.Status) error {
-	return errFakeNotImplemented
+func (r *fakeNotificationRepo) UpdateStatus(_ context.Context, n *domain.Notification, expectedSource domain.Status) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.store[n.ID]
+	if !ok {
+		return ports.ErrNotFound
+	}
+	if existing.Status != expectedSource {
+		return ports.ErrConcurrentUpdate
+	}
+	r.store[n.ID] = n
+	return nil
 }
 
 func (r *fakeNotificationRepo) List(_ context.Context, _ ports.NotificationFilter, _ string, _ int) ([]*domain.Notification, string, error) {
@@ -208,9 +218,10 @@ type enqueuedItem struct {
 }
 
 type fakeQueue struct {
-	mu     sync.Mutex
-	items  []enqueuedItem
-	enqErr error // optional injection
+	mu        sync.Mutex
+	items     []enqueuedItem
+	cancelled []domain.NotificationID
+	enqErr    error // optional injection
 }
 
 func newFakeQueue() *fakeQueue { return &fakeQueue{} }
@@ -236,9 +247,9 @@ func (q *fakeQueue) EnqueueScheduled(_ context.Context, id domain.NotificationID
 	return nil
 }
 
-func (q *fakeQueue) Cancel(_ context.Context, _ domain.NotificationID) error {
+func (q *fakeQueue) Cancel(_ context.Context, id domain.NotificationID) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// Best-effort by design; no-op in the fake.
+	q.cancelled = append(q.cancelled, id)
 	return nil
 }
