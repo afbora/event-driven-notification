@@ -151,8 +151,8 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 	idGen := id.New()
 	wallClock := clock.New()
 
-	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, queue, idGen, wallClock)
-	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, wallClock)
+	createNotif := application.NewCreateNotification(notifRepo, logRepo, tmplRepo, queue, idGen, wallClock, nil)
+	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, wallClock, nil)
 	getNotif := application.NewGetNotification(notifRepo)
 	listNotifs := application.NewListNotifications(notifRepo)
 	cancelNotif := application.NewCancelNotification(notifRepo, logRepo, queue, idGen, wallClock)
@@ -166,7 +166,7 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 
 	processUC := application.NewProcessNotification(
 		notifRepo, logRepo, mockProvider, outboundLimiter, broadcaster,
-		idGen, wallClock,
+		idGen, wallClock, nil,
 	)
 
 	// --- worker -------------------------------------------------------

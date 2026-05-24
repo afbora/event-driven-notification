@@ -26,7 +26,7 @@ func newScheduleNotification(t *testing.T) (
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
 
-	createUC := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock)
+	createUC := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock, nil)
 	uc := application.NewScheduleNotification(createUC, clock)
 	return uc, repo, queue
 }

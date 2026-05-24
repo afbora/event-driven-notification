@@ -46,11 +46,12 @@ type CreateNotification struct {
 	queue    ports.Queue
 	idGen    ports.IDGenerator
 	clock    ports.Clock
+	metrics  MetricsRecorder // optional; nil skips emit
 }
 
-// NewCreateNotification wires the dependencies. Every port is required;
-// passing nil yields a panic on first use, surfaced cheaply at startup
-// rather than during a request.
+// NewCreateNotification wires the dependencies. Every port is
+// required except metricsRec — tests that do not care about
+// observability pass nil.
 func NewCreateNotification(
 	repo ports.NotificationRepository,
 	logRepo ports.NotificationLogRepository,
@@ -58,6 +59,7 @@ func NewCreateNotification(
 	queue ports.Queue,
 	idGen ports.IDGenerator,
 	clock ports.Clock,
+	metricsRec MetricsRecorder,
 ) *CreateNotification {
 	return &CreateNotification{
 		repo:     repo,
@@ -66,6 +68,7 @@ func NewCreateNotification(
 		queue:    queue,
 		idGen:    idGen,
 		clock:    clock,
+		metrics:  metricsRec,
 	}
 }
 
@@ -146,6 +149,10 @@ func (uc *CreateNotification) Execute(ctx context.Context, in CreateNotification
 
 	if err := uc.markQueued(ctx, n, now); err != nil {
 		return nil, err
+	}
+
+	if uc.metrics != nil {
+		uc.metrics.NotificationCreated(string(n.Channel), string(n.Priority))
 	}
 
 	return n, nil

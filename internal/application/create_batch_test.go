@@ -24,7 +24,7 @@ func newCreateBatch(t *testing.T) (
 	queue := newFakeQueue()
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
-	uc := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, clock)
+	uc := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, clock, nil)
 	return uc, batchRepo, logRepo, queue
 }
 

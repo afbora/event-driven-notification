@@ -16,6 +16,8 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	goredis "github.com/redis/go-redis/v9"
 
 	hibikenasynq "github.com/hibiken/asynq"
@@ -32,6 +34,7 @@ import (
 	"github.com/afbora/event-driven-notification/internal/infrastructure/config"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/id"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/logger"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/tracing"
 )
 
@@ -74,6 +77,9 @@ func run() error {
 	// --- shared singletons ---------------------------------------------
 	idGen := id.New()
 	wallClock := clock.New()
+	promRegistry := prometheus.NewRegistry()
+	promRegistry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	appMetrics := metrics.New(promRegistry)
 
 	// --- repositories + adapters ---------------------------------------
 	notifRepo := pgadapter.NewNotificationRepository(pool)
@@ -100,6 +106,7 @@ func run() error {
 		notifRepo, logRepo,
 		guardedProvider, outboundLimiter, broadcaster,
 		idGen, wallClock,
+		appMetrics,
 	)
 
 	// --- asynq server --------------------------------------------------
