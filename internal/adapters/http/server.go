@@ -3,6 +3,8 @@ package http
 import (
 	"context"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/afbora/event-driven-notification/internal/application"
 	"github.com/afbora/event-driven-notification/internal/domain"
 )
@@ -89,6 +91,11 @@ type ServerOptions struct {
 	// API has no downstream dependencies to verify and reports ready
 	// the moment it can accept HTTP.
 	ReadinessChecks []ReadinessCheck
+
+	// PrometheusGatherer is the source for /metrics. Production wires
+	// prometheus.DefaultGatherer (or a custom registry); leave nil and
+	// the endpoint falls through to 501 via the embedded stub.
+	PrometheusGatherer prometheus.Gatherer
 }
 
 // Server is the adapter that implements api.StrictServerInterface by
@@ -116,7 +123,8 @@ type Server struct {
 	replaceTemplate ReplaceTemplateExecutor
 	deleteTemplate  DeleteTemplateExecutor
 
-	readinessChecks []ReadinessCheck
+	readinessChecks    []ReadinessCheck
+	prometheusGatherer prometheus.Gatherer
 }
 
 // NewServer wires the executors carried by opts into a Server. The
@@ -137,5 +145,6 @@ func NewServer(opts ServerOptions) *Server {
 		replaceTemplate:      opts.ReplaceTemplate,
 		deleteTemplate:       opts.DeleteTemplate,
 		readinessChecks:      opts.ReadinessChecks,
+		prometheusGatherer:   opts.PrometheusGatherer,
 	}
 }
