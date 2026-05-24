@@ -111,6 +111,15 @@ func TestNotificationRepository_Create_WithOptionalFields(t *testing.T) {
 	scheduledAt := fixedIntegrationNow.Add(24 * time.Hour)
 	templateID := "01940000-0000-7000-8000-0000000000a0"
 
+	// Seed the referenced template so the FK can resolve. TemplateRepository
+	// lands in PLAN.md task 15; until then a direct insert suffices for this
+	// integration test.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO templates (id, name, channel, body) VALUES ($1, 'tmpl-with-optionals', 'email', 'body {{.Var}}')`,
+		templateID,
+	)
+	require.NoError(t, err, "seed template row for FK resolution")
+
 	n, err := domain.NewNotification(domain.NewNotificationInput{
 		ID:             integrationNotificationID("02"),
 		CorrelationID:  "01940000-0000-7000-8000-0000000000c0",
