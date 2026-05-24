@@ -18,12 +18,13 @@ func newCreateBatch(t *testing.T) (
 	*fakeQueue,
 ) {
 	t.Helper()
-	batchRepo := newFakeBatchRepo()
+	notifRepo := newFakeNotificationRepo()
+	batchRepo := newFakeBatchRepo().WithNotifSink(notifRepo)
 	logRepo := newFakeNotificationLogRepo()
 	queue := newFakeQueue()
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
-	uc := application.NewCreateBatch(batchRepo, logRepo, queue, idGen, clock)
+	uc := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, clock)
 	return uc, batchRepo, logRepo, queue
 }
 
@@ -56,16 +57,24 @@ func TestCreateBatch_HappyPath(t *testing.T) {
 		require.NotNilf(t, n.BatchID, "notification %d: BatchID is nil", i)
 		require.Equalf(t, batch.ID, *n.BatchID, "notification %d: BatchID mismatch", i)
 		require.Equalf(t, batch.CorrelationID, n.CorrelationID, "notification %d: correlation id mismatch", i)
-		require.Equalf(t, domain.StatusPending, n.Status, "notification %d: status not pending", i)
+		require.Equalf(t, domain.StatusQueued, n.Status,
+			"notification %d: CreateBatch advances pending → queued so the worker's atomic claim accepts the task", i)
 	}
 
 	// Persisted atomically (one batch entry; postgres adapter will fan out).
 	require.Len(t, batchRepo.store, 1)
 
-	// One log entry per notification, all with event=created.
-	require.Len(t, logRepo.entries, 3)
+	// Two log entries per notification: "created" before enqueue,
+	// "queued" after the pending → queued transition. The loop
+	// alternates created/queued because CreateBatch records both for
+	// each notification before moving on to the next.
+	require.Len(t, logRepo.entries, 6)
 	for i, entry := range logRepo.entries {
-		require.Equalf(t, domain.LogEventCreated, entry.Event, "log %d: event mismatch", i)
+		want := domain.LogEventCreated
+		if i%2 == 1 {
+			want = domain.LogEventQueued
+		}
+		require.Equalf(t, want, entry.Event, "log %d: event mismatch", i)
 		require.Equalf(t, batch.CorrelationID, entry.CorrelationID, "log %d: correlation id mismatch", i)
 	}
 

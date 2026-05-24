@@ -113,7 +113,7 @@ func NewHarness(ctx context.Context, t *testing.T) *Harness {
 	wallClock := clock.New()
 
 	createNotif := application.NewCreateNotification(notifRepo, logRepo, queue, idGen, wallClock)
-	createBatch := application.NewCreateBatch(batchRepo, logRepo, queue, idGen, wallClock)
+	createBatch := application.NewCreateBatch(batchRepo, notifRepo, logRepo, queue, idGen, wallClock)
 	getNotif := application.NewGetNotification(notifRepo)
 	listNotifs := application.NewListNotifications(notifRepo)
 	cancelNotif := application.NewCancelNotification(notifRepo, logRepo, queue, idGen, wallClock)

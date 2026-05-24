@@ -10,6 +10,7 @@ package application_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -49,11 +50,15 @@ type fakeIDGenerator struct {
 }
 
 func newDefaultFakeIDs() *fakeIDGenerator {
+	logs := make([]domain.LogID, 32)
+	for i := range logs {
+		logs[i] = domain.LogID(fmt.Sprintf("01LOG%02d", i+1))
+	}
 	return &fakeIDGenerator{
 		notifications: []domain.NotificationID{"01NOTIF01", "01NOTIF02", "01NOTIF03", "01NOTIF04"},
 		batches:       []domain.BatchID{"01BATCH01", "01BATCH02"},
 		templates:     []domain.TemplateID{"01TMPL01"},
-		logs:          []domain.LogID{"01LOG01", "01LOG02", "01LOG03", "01LOG04"},
+		logs:          logs,
 		correlations:  []string{"01CORR01", "01CORR02"},
 	}
 }
@@ -242,10 +247,25 @@ type fakeBatchRepo struct {
 	mu        sync.Mutex
 	store     map[domain.BatchID]*domain.Batch
 	createErr error
+
+	// notifRepo, when non-nil, is also populated on Create — production
+	// BatchRepository.Create persists into the notifications table in
+	// one transaction, so a subsequent UpdateStatus on a member sees
+	// the row. Tests that exercise the CreateBatch → mark-queued path
+	// link the two fakes via WithNotifSink.
+	notifRepo *fakeNotificationRepo
 }
 
 func newFakeBatchRepo() *fakeBatchRepo {
 	return &fakeBatchRepo{store: make(map[domain.BatchID]*domain.Batch)}
+}
+
+// WithNotifSink wires a notification repo into the batch repo so
+// Create also seeds each member into the notification store. Mirrors
+// the production semantics where one transaction writes both tables.
+func (r *fakeBatchRepo) WithNotifSink(notifRepo *fakeNotificationRepo) *fakeBatchRepo {
+	r.notifRepo = notifRepo
+	return r
 }
 
 func (r *fakeBatchRepo) Create(_ context.Context, b *domain.Batch) error {
@@ -255,6 +275,14 @@ func (r *fakeBatchRepo) Create(_ context.Context, b *domain.Batch) error {
 		return r.createErr
 	}
 	r.store[b.ID] = b
+	if r.notifRepo != nil {
+		for _, n := range b.Notifications {
+			copied := *n
+			r.notifRepo.mu.Lock()
+			r.notifRepo.store[n.ID] = &copied
+			r.notifRepo.mu.Unlock()
+		}
+	}
 	return nil
 }
 
