@@ -158,30 +158,41 @@ func TestTemplate_Render(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := domain.NewTemplate(domain.NewTemplateInput{
-				ID:      "01HXYZTMPL00000000000000000",
-				Name:    "render-test",
-				Channel: domain.ChannelSMS,
-				Body:    tc.body,
-			}, fixedNow)
-			if err != nil {
-				t.Fatalf("setup template: %v", err)
-			}
-
-			got, err := tmpl.Render(tc.vars)
-
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("Render() = %q, want %q", got, tc.want)
-			}
+			assertRender(t, tc.body, tc.vars, tc.want, tc.wantErr)
 		})
+	}
+}
+
+// assertRender constructs a template from body, calls Render with vars,
+// and applies the per-case assertion: on wantErr the function checks
+// errors.Is and stops; on success it compares the rendered output to
+// want. Template setup is owned by the helper (not the t.Run closure)
+// so each case reads "given body and vars, expect want / wantErr"
+// without setup boilerplate leaking into the table loop.
+func assertRender(t *testing.T, body string, vars map[string]any, want string, wantErr error) {
+	t.Helper()
+	tmpl, err := domain.NewTemplate(domain.NewTemplateInput{
+		ID:      "01HXYZTMPL00000000000000000",
+		Name:    "render-test",
+		Channel: domain.ChannelSMS,
+		Body:    body,
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("setup template: %v", err)
+	}
+
+	got, err := tmpl.Render(vars)
+
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want errors.Is(_, %v)", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != want {
+		t.Errorf("Render() = %q, want %q", got, want)
 	}
 }
