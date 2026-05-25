@@ -1,7 +1,9 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	nethttp "net/http"
@@ -211,6 +213,100 @@ func TestIdempotency_NonSuccessNotCached(t *testing.T) {
 			require.Empty(t, store.setCalls, "non-2xx responses must not be cached")
 		})
 	}
+}
+
+// TestIdempotency_SameKey_DifferentBody_Returns409Conflict: CLAUDE.md
+// §3.9 calls Idempotency-Key the contract for "same intent, same
+// outcome." Reusing a key with a *different* request body is a client
+// bug — two distinct intents collide on one key — and the API must
+// surface it as RFC 7807 409 Conflict, not silently replay the first
+// response (which would mask the bug AND hide the second intent's
+// payload from any audit).
+//
+// The middleware runs the handler twice on the same fake store: first
+// with body A (cache miss → handler runs, response cached), then with
+// body B + the same key (cache hit BUT bodies disagree → 409). The
+// handler must NOT run on the second call — the conflict is the
+// terminal response, the inner handler never sees it.
+func TestIdempotency_SameKey_DifferentBody_Returns409Conflict(t *testing.T) {
+	store := newFakeIdempotencyStore()
+	mw := httpadapter.IdempotencyMiddleware(store)
+
+	handlerCalls := 0
+	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
+		handlerCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(nethttp.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"first"}`))
+	}))
+
+	// --- First POST: body A, cache miss, handler runs, response stored.
+	bodyA := []byte(`{"channel":"sms","content":"A"}`)
+	req1 := httptest.NewRequest(nethttp.MethodPost, "/x", bytes.NewReader(bodyA))
+	req1.Header.Set("Idempotency-Key", "dup-key")
+	req1.Header.Set("Content-Type", "application/json")
+	rr1 := httptest.NewRecorder()
+	handler.ServeHTTP(rr1, req1)
+	require.Equal(t, nethttp.StatusAccepted, rr1.Code, "first call must succeed (cache miss)")
+	require.Equal(t, 1, handlerCalls, "first call must run the handler exactly once")
+
+	// --- Second POST: body B, same key, cache hit with mismatched body.
+	bodyB := []byte(`{"channel":"sms","content":"B"}`)
+	req2 := httptest.NewRequest(nethttp.MethodPost, "/x", bytes.NewReader(bodyB))
+	req2.Header.Set("Idempotency-Key", "dup-key")
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+
+	require.Equal(t, nethttp.StatusConflict, rr2.Code,
+		"different body under the same idempotency key must be 409 Conflict; got status=%d body=%s",
+		rr2.Code, rr2.Body.String())
+	require.Equal(t, 1, handlerCalls,
+		"handler must NOT run on a key/body conflict — the 409 is terminal")
+	require.Equal(t, "application/problem+json", rr2.Header().Get("Content-Type"),
+		"RFC 7807 mandates application/problem+json")
+
+	var prob httpadapter.Problem
+	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &prob),
+		"body must be parseable RFC 7807 Problem: %s", rr2.Body.String())
+	require.Equal(t, nethttp.StatusConflict, prob.Status, "Problem.status must mirror the HTTP status")
+	require.NotEmpty(t, prob.Title, "Problem.title is required by RFC 7807")
+	require.NotEmpty(t, prob.Type, "Problem.type should be set (we use /probs/idempotency-key-mismatch)")
+}
+
+// TestIdempotency_SameKey_SameBody_StillReplays: the matching-body path
+// keeps the existing replay semantics — 200 + cached body — even after
+// the conflict-detection logic lands. Guards against an over-eager fix
+// that 409s every cache hit.
+func TestIdempotency_SameKey_SameBody_StillReplays(t *testing.T) {
+	store := newFakeIdempotencyStore()
+	mw := httpadapter.IdempotencyMiddleware(store)
+
+	handlerCalls := 0
+	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
+		handlerCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(nethttp.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"first"}`))
+	}))
+
+	body := []byte(`{"channel":"sms","content":"same"}`)
+
+	req1 := httptest.NewRequest(nethttp.MethodPost, "/x", bytes.NewReader(body))
+	req1.Header.Set("Idempotency-Key", "match-key")
+	rr1 := httptest.NewRecorder()
+	handler.ServeHTTP(rr1, req1)
+	require.Equal(t, nethttp.StatusAccepted, rr1.Code)
+	require.Equal(t, 1, handlerCalls)
+
+	req2 := httptest.NewRequest(nethttp.MethodPost, "/x", bytes.NewReader(body))
+	req2.Header.Set("Idempotency-Key", "match-key")
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+
+	require.Equal(t, nethttp.StatusOK, rr2.Code, "matching body must still replay as 200")
+	require.Equal(t, 1, handlerCalls, "matching replay must not re-invoke the handler")
+	require.Equal(t, `{"id":"first"}`, rr2.Body.String(), "replay body must match first response")
 }
 
 // TestIdempotency_CapturedBodyMatchesClientView: end-to-end check that
