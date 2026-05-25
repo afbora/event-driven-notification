@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	nethttp "net/http"
 	"net/http/httptest"
@@ -89,6 +90,48 @@ func TestInboundRateLimit_Denied_Returns429(t *testing.T) {
 	require.Equal(t, nethttp.StatusTooManyRequests, rr.Code)
 	require.Equal(t, "12", rr.Header().Get("Retry-After"),
 		"retry-after must be the limiter's hint, rounded up to seconds")
+}
+
+// TestInboundRateLimit_Denied_BodyIsRFC7807ProblemDetails: CLAUDE.md
+// §3.5 / §10 mandate RFC 7807 problem responses for every error the
+// API emits, including 429. The current minimal `{"error": "..."}`
+// envelope is the gap captured in E2E_REPORT.md §H — fix it.
+//
+// Required shape:
+//
+//	Content-Type: application/problem+json
+//	body:        { "type":..., "title":..., "status": 429, "detail":... }
+//
+// The Retry-After header from the limiter must still be present —
+// problem details and retry guidance are independent contracts.
+func TestInboundRateLimit_Denied_BodyIsRFC7807ProblemDetails(t *testing.T) {
+	limiter := &fakeLimiter{allowed: false, retryAfter: 30 * time.Second}
+	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+
+	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
+		t.Fatal("handler must not be invoked on a 429")
+	}))
+
+	req := httptest.NewRequest(nethttp.MethodGet, "/api/v1/notifications", nil)
+	req.RemoteAddr = "9.9.9.9:1"
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, nethttp.StatusTooManyRequests, rr.Code)
+	require.Equal(t, "application/problem+json", rr.Header().Get("Content-Type"),
+		"RFC 7807 §3 mandates application/problem+json")
+	require.Equal(t, "30", rr.Header().Get("Retry-After"),
+		"Retry-After must survive the migration to RFC 7807")
+
+	var prob httpadapter.Problem
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &prob),
+		"body must be parseable RFC 7807 Problem; got %s", rr.Body.String())
+	require.Equal(t, nethttp.StatusTooManyRequests, prob.Status,
+		"Problem.status must mirror the HTTP status")
+	require.NotEmpty(t, prob.Title, "Problem.title is required by RFC 7807")
+	require.NotEmpty(t, prob.Type, "Problem.type should advertise the cause")
+	require.Equal(t, "/api/v1/notifications", prob.Instance,
+		"Problem.instance defaults to the request URL path")
 }
 
 // TestInboundRateLimit_LimiterError_FailsOpen: when the backing store
