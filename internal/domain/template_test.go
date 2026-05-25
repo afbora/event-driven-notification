@@ -64,28 +64,37 @@ func TestNewTemplate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validTemplateInput()
 			tc.mutate(&in)
-
-			tmpl, err := domain.NewTemplate(in, fixedNow)
-
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if tmpl == nil {
-				t.Fatal("template is nil")
-			}
-			if tmpl.ID != in.ID {
-				t.Errorf("ID = %q, want %q", tmpl.ID, in.ID)
-			}
-			if !tmpl.CreatedAt.Equal(fixedNow) {
-				t.Errorf("CreatedAt = %v, want %v", tmpl.CreatedAt, fixedNow)
-			}
+			assertNewTemplate(t, in, tc.wantErr)
 		})
+	}
+}
+
+// assertNewTemplate drives NewTemplate and applies the per-case
+// assertion: on wantErr the function checks errors.Is and stops; on
+// success it validates the surfaced ID and CreatedAt parity with the
+// injected clock. Splitting the assertions out keeps TestNewTemplate's
+// body at a single flow-control step.
+func assertNewTemplate(t *testing.T, in domain.NewTemplateInput, wantErr error) {
+	t.Helper()
+	tmpl, err := domain.NewTemplate(in, fixedNow)
+
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want errors.Is(_, %v)", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if tmpl == nil {
+		t.Fatal("template is nil")
+	}
+	if tmpl.ID != in.ID {
+		t.Errorf("ID = %q, want %q", tmpl.ID, in.ID)
+	}
+	if !tmpl.CreatedAt.Equal(fixedNow) {
+		t.Errorf("CreatedAt = %v, want %v", tmpl.CreatedAt, fixedNow)
 	}
 }
 
