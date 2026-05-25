@@ -1,0 +1,11 @@
+# CODEOWNERS — Phase 7 task 8.
+#
+# GitHub auto-requests review from owners listed below when a PR
+# touches matching paths. Single-maintainer projects (like this
+# assessment submission) point everything at the project lead so
+# reviews stay accountable without bouncing between owners.
+#
+# Path-specific overrides arrive when the team grows — for now,
+# one line catches every change.
+
+* @afbora
