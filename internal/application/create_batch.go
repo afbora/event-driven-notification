@@ -101,30 +101,40 @@ func (uc *CreateBatch) Execute(ctx context.Context, in CreateBatchInput) (*domai
 	}
 
 	for _, n := range batch.Notifications {
-		if err := uc.recordCreated(ctx, n, now); err != nil {
+		if err := uc.enqueueMember(ctx, n, now); err != nil {
 			return nil, err
-		}
-		if err := uc.queue.Enqueue(ctx, n.ID, n.Priority, n.IdempotencyKey); err != nil {
-			return nil, fmt.Errorf("enqueue notification %s: %w", n.ID, err)
-		}
-		// Move pending → queued so the worker's atomic claim accepts
-		// the notification. Same rationale as CreateNotification — on
-		// failure, the reconciler's orphaned-pending sweep recovers.
-		if err := n.MarkQueued(now); err != nil {
-			return nil, fmt.Errorf("mark queued %s: %w", n.ID, err)
-		}
-		if err := uc.notifRepo.UpdateStatus(ctx, n, domain.StatusPending); err != nil {
-			return nil, fmt.Errorf("persist queued status %s: %w", n.ID, err)
-		}
-		if err := uc.recordQueued(ctx, n, now); err != nil {
-			return nil, err
-		}
-		if uc.metrics != nil {
-			uc.metrics.NotificationCreated(string(n.Channel), string(n.Priority))
 		}
 	}
 
 	return batch, nil
+}
+
+// enqueueMember runs the per-notification side effects for a batch
+// member: write the "created" log, enqueue the asynq task, transition
+// pending → queued in the DB so the worker's atomic claim accepts it
+// (CLAUDE.md §3.10), write the "queued" log, and emit metrics. Any
+// failure aborts; the reconciler's orphaned-pending sweep recovers
+// from a half-finished enqueue (ADR-0011).
+func (uc *CreateBatch) enqueueMember(ctx context.Context, n *domain.Notification, now time.Time) error {
+	if err := uc.recordCreated(ctx, n, now); err != nil {
+		return err
+	}
+	if err := uc.queue.Enqueue(ctx, n.ID, n.Priority, n.IdempotencyKey); err != nil {
+		return fmt.Errorf("enqueue notification %s: %w", n.ID, err)
+	}
+	if err := n.MarkQueued(now); err != nil {
+		return fmt.Errorf("mark queued %s: %w", n.ID, err)
+	}
+	if err := uc.notifRepo.UpdateStatus(ctx, n, domain.StatusPending); err != nil {
+		return fmt.Errorf("persist queued status %s: %w", n.ID, err)
+	}
+	if err := uc.recordQueued(ctx, n, now); err != nil {
+		return err
+	}
+	if uc.metrics != nil {
+		uc.metrics.NotificationCreated(string(n.Channel), string(n.Priority))
+	}
+	return nil
 }
 
 // recordQueued writes the "queued" row into notification_logs after
@@ -153,11 +163,11 @@ func (uc *CreateBatch) buildNotifications(items []CreateBatchItem, correlationID
 	for i, item := range items {
 		channel, err := domain.NewChannel(item.Channel)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		priority, err := domain.NewPriority(item.Priority)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		n, err := domain.NewNotification(domain.NewNotificationInput{
 			ID:             uc.idGen.NewNotificationID(),
@@ -170,11 +180,19 @@ func (uc *CreateBatch) buildNotifications(items []CreateBatchItem, correlationID
 			TemplateID:     item.TemplateID,
 		}, now)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		notifs = append(notifs, n)
 	}
 	return notifs, nil
+}
+
+// wrapItemErr annotates an item-level error with its position in the
+// input slice so callers can map the failure back to the request body.
+// Centralizing the format also satisfies SonarCloud S1192 (literal
+// duplication) without scattering a const across the file.
+func wrapItemErr(i int, err error) error {
+	return fmt.Errorf("notification %d: %w", i, err)
 }
 
 // recordCreated writes the initial "created" row into notification_logs.

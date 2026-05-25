@@ -147,6 +147,66 @@ func TestReplaceTemplate_NotFound(t *testing.T) {
 	require.True(t, errors.Is(err, ports.ErrNotFound))
 }
 
+// --- failure injection ---------------------------------------------------
+
+// TestCreateTemplate_RepoFails: when repo.Create surfaces an error the
+// use case wraps it with "create template: %w" and propagates. Covers
+// the repository-error branch in CreateTemplate.Execute.
+func TestCreateTemplate_RepoFails(t *testing.T) {
+	repo := newFakeTemplateRepo()
+	repo.createErr = errors.New("db unavailable")
+	uc := application.NewCreateTemplate(repo, newDefaultFakeIDs(), newFakeClock(fixedAppNow))
+
+	_, err := uc.Execute(context.Background(), application.CreateTemplateInput{
+		Name:    "welcome-sms",
+		Channel: "sms",
+		Body:    "Hello",
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "create template")
+	require.ErrorContains(t, err, "db unavailable")
+}
+
+// TestListTemplates_RepoFails: when repo.List surfaces an error the
+// use case wraps it with "list templates: %w". Covers the
+// repository-error branch in ListTemplates.Execute.
+func TestListTemplates_RepoFails(t *testing.T) {
+	repo := newFakeTemplateRepo()
+	repo.listErr = errors.New("query timeout")
+	uc := application.NewListTemplates(repo)
+
+	_, err := uc.Execute(context.Background(), application.ListTemplatesInput{Limit: 10})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "list templates")
+	require.ErrorContains(t, err, "query timeout")
+}
+
+// TestReplaceTemplate_UpdateFails: when repo.Update surfaces an error
+// (after a successful Get) the use case wraps it with "update template: %w".
+// Covers the update-error branch in ReplaceTemplate.Execute that fires
+// only after the Get + domain.NewTemplate succeed.
+func TestReplaceTemplate_UpdateFails(t *testing.T) {
+	repo := newFakeTemplateRepo()
+	original := mustNewTemplate(t, "01940000-0000-7000-8000-00000000tt77", "to-update", domain.ChannelSMS)
+	require.NoError(t, repo.Create(context.Background(), original))
+
+	repo.updateErr = errors.New("db unavailable")
+	uc := application.NewReplaceTemplate(repo, newFakeClock(fixedAppNow))
+
+	_, err := uc.Execute(context.Background(), application.ReplaceTemplateInput{
+		ID:      original.ID,
+		Name:    "x",
+		Channel: "sms",
+		Body:    "y",
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "update template")
+	require.ErrorContains(t, err, "db unavailable")
+}
+
 // --- Delete --------------------------------------------------------------
 
 // TestDeleteTemplate_HappyPath: removes the template; subsequent Get

@@ -58,45 +58,74 @@ func run() error {
 		_, _ = m.Close()
 	}()
 
-	switch cmd := os.Args[1]; cmd {
+	cmd := os.Args[1]
+	args := os.Args[2:]
+	switch cmd {
 	case "up":
-		if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-			return fmt.Errorf("up: %w", err)
-		}
-		slog.Info("migrations applied")
+		return runUp(m)
 	case "down":
-		steps := 1
-		if len(os.Args) >= 3 {
-			n, perr := strconv.Atoi(os.Args[2])
-			if perr != nil || n < 1 {
-				return fmt.Errorf("down steps must be a positive integer, got %q", os.Args[2])
-			}
-			steps = n
-		}
-		if err := m.Steps(-steps); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-			return fmt.Errorf("down %d: %w", steps, err)
-		}
-		slog.Info("migrations rolled back", "steps", steps)
+		return runDown(m, args)
 	case "version":
-		v, dirty, verr := m.Version()
-		if verr != nil && !errors.Is(verr, migrate.ErrNilVersion) {
-			return fmt.Errorf("version: %w", verr)
-		}
-		fmt.Printf("version=%d dirty=%v\n", v, dirty)
+		return runVersion(m)
 	case "force":
-		if len(os.Args) < 3 {
-			return errors.New("usage: migrate force <version>")
-		}
-		v, perr := strconv.Atoi(os.Args[2])
-		if perr != nil {
-			return fmt.Errorf("force version must be an integer, got %q", os.Args[2])
-		}
-		if err := m.Force(v); err != nil {
-			return fmt.Errorf("force %d: %w", v, err)
-		}
-		slog.Info("migration version forced", "version", v)
+		return runForce(m, args)
 	default:
 		return fmt.Errorf("unknown command %q (use up|down|version|force)", cmd)
 	}
+}
+
+// runUp applies every pending migration. migrate.ErrNoChange is not
+// an error from a CLI standpoint — it means "already at HEAD."
+func runUp(m *migrate.Migrate) error {
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("up: %w", err)
+	}
+	slog.Info("migrations applied")
+	return nil
+}
+
+// runDown rolls back N migrations. N defaults to 1; when supplied it
+// must be a positive integer.
+func runDown(m *migrate.Migrate, args []string) error {
+	steps := 1
+	if len(args) >= 1 {
+		n, perr := strconv.Atoi(args[0])
+		if perr != nil || n < 1 {
+			return fmt.Errorf("down steps must be a positive integer, got %q", args[0])
+		}
+		steps = n
+	}
+	if err := m.Steps(-steps); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("down %d: %w", steps, err)
+	}
+	slog.Info("migrations rolled back", "steps", steps)
+	return nil
+}
+
+// runVersion prints the current schema version. migrate.ErrNilVersion
+// (no migrations applied yet) is not an error; we just print version=0.
+func runVersion(m *migrate.Migrate) error {
+	v, dirty, verr := m.Version()
+	if verr != nil && !errors.Is(verr, migrate.ErrNilVersion) {
+		return fmt.Errorf("version: %w", verr)
+	}
+	fmt.Printf("version=%d dirty=%v\n", v, dirty)
+	return nil
+}
+
+// runForce sets the schema version pointer without running any
+// migration. Used to recover from a dirty state.
+func runForce(m *migrate.Migrate, args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: migrate force <version>")
+	}
+	v, perr := strconv.Atoi(args[0])
+	if perr != nil {
+		return fmt.Errorf("force version must be an integer, got %q", args[0])
+	}
+	if err := m.Force(v); err != nil {
+		return fmt.Errorf("force %d: %w", v, err)
+	}
+	slog.Info("migration version forced", "version", v)
 	return nil
 }

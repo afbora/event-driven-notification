@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	nethttp "net/http"
 	"time"
@@ -51,42 +52,64 @@ func IdempotencyMiddleware(store ports.IdempotencyStore) func(nethttp.Handler) n
 			}
 
 			ctx := r.Context()
-
-			if body, contentType, found, err := store.Get(ctx, key); err == nil && found {
-				if contentType != "" {
-					w.Header().Set("Content-Type", contentType)
-				}
-				w.WriteHeader(nethttp.StatusOK)
-				// body comes from a previously captured handler response on a
-				// cache hit; it is our own data round-tripped through Redis,
-				// not direct client input. gosec's taint analysis cannot see
-				// the provenance, so the suppression is documented here.
-				if _, werr := w.Write(body); werr != nil { //nolint:gosec // body is our captured handler output, not user-tainted
-					slog.WarnContext(ctx, "idempotency replay write failed",
-						"key", key,
-						"error", werr.Error(),
-					)
-				}
+			if serveFromIdempotencyCache(ctx, w, store, key) {
 				return
-			} else if err != nil {
-				slog.WarnContext(ctx, "idempotency store unavailable, allowing request",
-					"key", key,
-					"error", err.Error(),
-				)
 			}
 
 			cw := &capturingWriter{ResponseWriter: w, status: nethttp.StatusOK}
 			next.ServeHTTP(cw, r)
 
-			if cw.status >= 200 && cw.status < 300 {
-				if err := store.Set(ctx, key, cw.body.Bytes(), w.Header().Get("Content-Type"), idempotencyTTL); err != nil {
-					slog.WarnContext(ctx, "idempotency cache write failed",
-						"key", key,
-						"error", err.Error(),
-					)
-				}
-			}
+			cacheIdempotencyResponse(ctx, store, key, cw, w)
 		})
+	}
+}
+
+// serveFromIdempotencyCache writes a cached response when the key was
+// seen within the TTL and returns true. On store error it logs and
+// returns false (fail-open: availability beats strict enforcement when
+// Redis hiccups). A cache miss also returns false so the caller runs
+// the handler.
+func serveFromIdempotencyCache(ctx context.Context, w nethttp.ResponseWriter, store ports.IdempotencyStore, key string) bool {
+	body, contentType, found, err := store.Get(ctx, key)
+	if err != nil {
+		slog.WarnContext(ctx, "idempotency store unavailable, allowing request",
+			"key", key,
+			"error", err.Error(),
+		)
+		return false
+	}
+	if !found {
+		return false
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.WriteHeader(nethttp.StatusOK)
+	// body comes from a previously captured handler response on a
+	// cache hit; it is our own data round-tripped through Redis, not
+	// direct client input. gosec's taint analysis cannot see the
+	// provenance, so the suppression is documented here.
+	if _, werr := w.Write(body); werr != nil { //nolint:gosec // body is our captured handler output, not user-tainted
+		slog.WarnContext(ctx, "idempotency replay write failed",
+			"key", key,
+			"error", werr.Error(),
+		)
+	}
+	return true
+}
+
+// cacheIdempotencyResponse persists the captured response when the
+// handler succeeded (2xx). Non-2xx responses are intentionally skipped:
+// 5xx may be transient and 4xx might be retried with corrections.
+func cacheIdempotencyResponse(ctx context.Context, store ports.IdempotencyStore, key string, cw *capturingWriter, w nethttp.ResponseWriter) {
+	if cw.status < 200 || cw.status >= 300 {
+		return
+	}
+	if err := store.Set(ctx, key, cw.body.Bytes(), w.Header().Get("Content-Type"), idempotencyTTL); err != nil {
+		slog.WarnContext(ctx, "idempotency cache write failed",
+			"key", key,
+			"error", err.Error(),
+		)
 	}
 }
 

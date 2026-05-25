@@ -52,27 +52,35 @@ type ProcessNotification struct {
 	metrics     MetricsRecorder
 }
 
-// NewProcessNotification wires the dependencies. Every port is
-// required except metricsRec — tests pass nil to skip emit.
-func NewProcessNotification(
-	repo ports.NotificationRepository,
-	logRepo ports.NotificationLogRepository,
-	provider ports.Provider,
-	rateLimiter ports.RateLimiter,
-	broadcaster ports.StatusBroadcaster,
-	idGen ports.IDGenerator,
-	clock ports.Clock,
-	metricsRec MetricsRecorder,
-) *ProcessNotification {
+// ProcessNotificationDeps bundles the eight ports that ProcessNotification
+// composes. Bundling keeps NewProcessNotification's signature within
+// SonarCloud's parameter-count limit (S107) and makes the wiring code at
+// every call site self-documenting via field names rather than positional
+// order. Metrics is optional — tests pass a zero MetricsRecorder (nil)
+// to skip emission.
+type ProcessNotificationDeps struct {
+	Repo        ports.NotificationRepository
+	LogRepo     ports.NotificationLogRepository
+	Provider    ports.Provider
+	RateLimiter ports.RateLimiter
+	Broadcaster ports.StatusBroadcaster
+	IDGen       ports.IDGenerator
+	Clock       ports.Clock
+	Metrics     MetricsRecorder
+}
+
+// NewProcessNotification wires the dependencies. Every port in deps is
+// required except Metrics — tests pass nil to skip emit.
+func NewProcessNotification(deps ProcessNotificationDeps) *ProcessNotification {
 	return &ProcessNotification{
-		repo:        repo,
-		logRepo:     logRepo,
-		provider:    provider,
-		rateLimiter: rateLimiter,
-		broadcaster: broadcaster,
-		idGen:       idGen,
-		clock:       clock,
-		metrics:     metricsRec,
+		repo:        deps.Repo,
+		logRepo:     deps.LogRepo,
+		provider:    deps.Provider,
+		rateLimiter: deps.RateLimiter,
+		broadcaster: deps.Broadcaster,
+		idGen:       deps.IDGen,
+		clock:       deps.Clock,
+		metrics:     deps.Metrics,
 	}
 }
 
@@ -143,7 +151,9 @@ func attemptOutcome(result domain.DeliveryResult) string {
 
 // applyResult maps the provider response onto the state machine.
 // start is when the worker first claimed the notification — used to
-// stamp the processing-duration histogram.
+// stamp the processing-duration histogram. Each terminal branch is
+// delegated to a dedicated helper so this function stays a thin
+// dispatch table.
 func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, start time.Time) error {
 	now := uc.clock.Now()
 
@@ -159,45 +169,60 @@ func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notifi
 
 	switch {
 	case result.Success:
-		if err := n.MarkDelivered(now); err != nil {
-			return err
-		}
-		if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
-			return fmt.Errorf("update status (delivered): %w", err)
-		}
-		if uc.metrics != nil {
-			uc.metrics.NotificationDelivered(string(n.Channel))
-		}
-		return uc.recordEvent(ctx, n, domain.LogEventDelivered)
-
+		return uc.markDelivered(ctx, n, now)
 	case !result.Retryable || n.Attempts >= defaultMaxAttempts:
-		// Permanent failure, or retries exhausted — terminal.
-		if err := n.MarkFailed(now, result.Reason); err != nil {
-			return err
-		}
-		if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
-			return fmt.Errorf("update status (failed): %w", err)
-		}
-		if uc.metrics != nil {
-			reason := result.Reason
-			if reason == "" {
-				reason = "unspecified"
-			}
-			uc.metrics.NotificationFailed(string(n.Channel), reason)
-		}
-		return uc.recordEvent(ctx, n, domain.LogEventFailed)
-
+		return uc.markFailed(ctx, n, result, now)
 	default:
-		// Transient failure with attempts remaining — schedule a retry.
-		nextRetryAt := now.Add(backoffFor(n.Attempts))
-		if err := n.MarkRetrying(now, result.Reason, nextRetryAt); err != nil {
-			return err
-		}
-		if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
-			return fmt.Errorf("update status (retrying): %w", err)
-		}
-		return uc.recordEvent(ctx, n, domain.LogEventRetrying)
+		return uc.markRetrying(ctx, n, result, now)
 	}
+}
+
+// markDelivered finalizes a successful send: transition the entity,
+// persist, emit metrics, and append the delivered log row.
+func (uc *ProcessNotification) markDelivered(ctx context.Context, n *domain.Notification, now time.Time) error {
+	if err := n.MarkDelivered(now); err != nil {
+		return err
+	}
+	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
+		return fmt.Errorf("update status (delivered): %w", err)
+	}
+	if uc.metrics != nil {
+		uc.metrics.NotificationDelivered(string(n.Channel))
+	}
+	return uc.recordEvent(ctx, n, domain.LogEventDelivered)
+}
+
+// markFailed handles terminal failure — either permanent (non-retryable
+// provider response) or retries exhausted. The failure-reason label is
+// normalized so the failed-counter never carries an empty string.
+func (uc *ProcessNotification) markFailed(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time) error {
+	if err := n.MarkFailed(now, result.Reason); err != nil {
+		return err
+	}
+	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
+		return fmt.Errorf("update status (failed): %w", err)
+	}
+	if uc.metrics != nil {
+		reason := result.Reason
+		if reason == "" {
+			reason = "unspecified"
+		}
+		uc.metrics.NotificationFailed(string(n.Channel), reason)
+	}
+	return uc.recordEvent(ctx, n, domain.LogEventFailed)
+}
+
+// markRetrying schedules a transient failure for re-delivery. asynq
+// honors NextRetryAt; the worker re-runs Execute on the next delivery.
+func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time) error {
+	nextRetryAt := now.Add(backoffFor(n.Attempts))
+	if err := n.MarkRetrying(now, result.Reason, nextRetryAt); err != nil {
+		return err
+	}
+	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
+		return fmt.Errorf("update status (retrying): %w", err)
+	}
+	return uc.recordEvent(ctx, n, domain.LogEventRetrying)
 }
 
 // rescheduleForRateLimit moves the notification into retrying with a short

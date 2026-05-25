@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -119,6 +120,46 @@ func TestCreateBatch_EmptyNotifications(t *testing.T) {
 	require.Empty(t, batchRepo.store)
 	require.Empty(t, logRepo.entries)
 	require.Empty(t, queue.items)
+}
+
+// TestCreateBatch_BatchRepoFails: when batchRepo.Create fails, Execute
+// stops before enqueuing anything and surfaces the wrapped error. Covers
+// the "create batch: %w" branch in Execute.
+func TestCreateBatch_BatchRepoFails(t *testing.T) {
+	uc, batchRepo, logRepo, queue := newCreateBatch(t)
+	batchRepo.createErr = errors.New("db unavailable")
+
+	_, err := uc.Execute(context.Background(), application.CreateBatchInput{
+		CorrelationID: "01CORR",
+		Notifications: []application.CreateBatchItem{
+			{Channel: "sms", Priority: "normal", Recipient: "+905551111111", Content: "ok"},
+		},
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "create batch")
+	require.ErrorContains(t, err, "db unavailable")
+	require.Empty(t, logRepo.entries, "no log entries when batch fails")
+	require.Empty(t, queue.items, "no enqueues when batch fails")
+}
+
+// TestCreateBatch_EnqueueFails: when queue.Enqueue fails mid-batch, the
+// enqueueMember helper returns the wrapped error and Execute surfaces it.
+// Covers the queue-error branch inside enqueueMember.
+func TestCreateBatch_EnqueueFails(t *testing.T) {
+	uc, _, _, queue := newCreateBatch(t)
+	queue.enqErr = errors.New("queue offline")
+
+	_, err := uc.Execute(context.Background(), application.CreateBatchInput{
+		CorrelationID: "01CORR",
+		Notifications: []application.CreateBatchItem{
+			{Channel: "sms", Priority: "normal", Recipient: "+905551111111", Content: "first"},
+		},
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "enqueue notification")
+	require.ErrorContains(t, err, "queue offline")
 }
 
 // TestCreateBatch_InvalidNotificationInItem: a single bad item aborts the

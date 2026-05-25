@@ -23,7 +23,10 @@
 ## Table of contents
 
 - [What is this](#what-is-this)
+- [Status](#status)
 - [Quickstart](#quickstart)
+- [Testing](#testing)
+- [Repository layout](#repository-layout)
 - [Services and operational tools](#services-and-operational-tools)
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
@@ -32,8 +35,11 @@
 - [Capacity and performance](#capacity-and-performance)
 - [Design decisions](#design-decisions)
 - [Scaling considerations](#scaling-considerations)
+- [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
 - [Future work](#future-work)
+- [Contributing](./CONTRIBUTING.md)
+- [Operational runbook](./docs/RUNBOOK.md)
 
 ---
 
@@ -53,6 +59,39 @@ Three binaries, one Docker image:
 
 Plus **`cmd/migrate`** for schema management.
 
+### Four load-bearing phrases from the brief
+
+Every architectural decision in this repo defends one of these:
+
+1. **"Millions of notifications daily"** → horizontal scale, stateless
+   tiers, batch ingestion, connection pooling.
+2. **"Burst traffic (flash sales, breaking news)"** → asynchronous
+   processing, queue back-pressure, distributed rate limiting.
+3. **"Retry failed deliveries intelligently"** → exponential backoff
+   with jitter, error classification, circuit breaker, dead letter
+   queue, reconciliation safety net.
+4. **"Visibility for both internal teams and API consumers"** →
+   structured logging, Prometheus metrics, correlation IDs, status
+   query endpoints, notification trace endpoint, operational alerting.
+
+When in doubt while reading the code, re-read these four — they are
+the constitution (CLAUDE.md §1).
+
+---
+
+## Status
+
+**v1.0.0** · production-ready baseline · MIT licensed · Go 1.26
+
+| Signal | Where |
+|---|---|
+| Quality gate | SonarCloud **Passed** — 0 open issues, ≥80% new-code coverage |
+| CI pipeline | 8 jobs: lint, vuln, unit (race + coverage), integration, e2e, build, docker-smoke, sonarcloud upload |
+| Architecture | 11 ADRs in [`docs/adr/`](./docs/adr/) — every load-bearing choice documented |
+| Test discipline | Strict TDD: every `feat` commit is preceded by a matching `test` commit. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the rhythm. |
+| Commit convention | Conventional Commits, lowercase, no trailing period (CLAUDE.md §8) |
+| Branch policy | Feature branches → PR → **merge commit** (not squash) so the TDD rhythm stays visible in `main`'s history |
+
 ---
 
 ## Quickstart
@@ -71,13 +110,60 @@ curl -i http://localhost:8080/healthz/live
 **No `.env` file required.** Every env var lives inline in
 `docker-compose.yml` with a working default (CLAUDE.md §2.7 / ADR-0010).
 
-Run the unit + e2e suites:
+> **Port collisions:** if `5432`, `6379`, or `8080-8083` are already in
+> use locally, edit the host-side port mapping in `docker-compose.yml`
+> before bringing the stack up.
 
-```bash
-make test            # unit suite
-make test-e2e        # full stack via testcontainers (~3 min)
-make load-test       # k6 baseline + burst + rate-limit scenarios
+---
+
+## Testing
+
+The suite is split into four tiers so feedback stays fast during
+development and rigorous in CI:
+
+| Target | Scope | Typical runtime |
+|---|---|---|
+| `make test` | Unit (race + coverage, no Docker) | ~15 s |
+| `make test-integration` | Adapter tests via testcontainers | ~1-2 min |
+| `make test-e2e` | Full stack via testcontainers | ~3 min |
+| `make load-test` | k6 baseline + burst + rate-limit scenarios | ~6 min |
+| `make coverage-merge` | gocovmerge unit + integration + e2e | <5 s |
+
+CI runs every tier on every PR. Coverage policy and test discipline
+live in [`CLAUDE.md` §7](./CLAUDE.md). The TDD rhythm — `test(scope)`
+commit precedes every `feat(scope)` commit — is documented in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+---
+
+## Repository layout
+
+```text
+.
+├── cmd/                          # api · worker · reconciler · migrate
+├── internal/
+│   ├── domain/                   # entities, value objects, FSM (stdlib only)
+│   ├── application/              # use cases (stdlib + ports only)
+│   ├── ports/                    # interfaces — the DI boundary
+│   ├── adapters/                 # http · postgres · redis · asynq · provider · websocket
+│   └── infrastructure/           # config · logger · metrics · tracing · clock · id · circuit · correlation
+├── api/openapi.yaml              # source of truth for the REST contract
+├── deploy/                       # prometheus · alertmanager · grafana
+├── db/migrations/                # numbered SQL up/down pairs
+├── tests/{integration,e2e,load}/ # build-tag-gated higher tiers
+└── docs/
+    ├── adr/                      # 11 architectural decision records
+    ├── RUNBOOK.md                # one entry per alert
+    ├── LOAD_TEST.md              # k6 methodology + results
+    ├── API_EXAMPLES.md           # curl recipes for every endpoint
+    ├── brief.pdf                 # the assessment brief
+    └── bruno/                    # importable Bruno collection
 ```
+
+The hexagonal boundary is enforced by import discipline:
+`internal/domain/` and `internal/application/` import only stdlib and
+each other (CLAUDE.md §3.3). Delete `internal/adapters/postgres/` and
+the domain still compiles.
 
 ---
 
@@ -127,10 +213,10 @@ flowchart TB
   ports    --> app
   app      --> domain
 
-  classDef domainStyle fill:#fde68a,stroke:#92400e,stroke-width:2px
-  classDef appStyle    fill:#bbf7d0,stroke:#065f46,stroke-width:2px
-  classDef portsStyle  fill:#c7d2fe,stroke:#312e81,stroke-width:2px
-  classDef adaptStyle  fill:#fbcfe8,stroke:#9d174d,stroke-width:2px
+  classDef domainStyle fill:#fde68a,stroke:#92400e,stroke-width:2px,color:#92400e
+  classDef appStyle    fill:#bbf7d0,stroke:#065f46,stroke-width:2px,color:#065f46
+  classDef portsStyle  fill:#c7d2fe,stroke:#312e81,stroke-width:2px,color:#312e81
+  classDef adaptStyle  fill:#fbcfe8,stroke:#9d174d,stroke-width:2px,color:#9d174d
 
   class domain domainStyle
   class app appStyle
@@ -427,6 +513,31 @@ choices made before the first line of business code:
 
 See [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) for alert-specific operator
 playbooks.
+
+---
+
+## Limitations
+
+Honest scope boundaries — what is **not** in this baseline:
+
+- **Providers are mocked.** `MockProvider` (configurable failure rate)
+  is the default; `WebhookProvider` accepts any HTTP endpoint as a
+  generic outbound sink. Twilio / SendGrid / FCM adapters are *designed
+  for* via `ports.Provider` (ADR-0004) but not bundled — adding one is
+  a single new file behind the same interface.
+- **Single-tenant.** No `tenant_id` column or per-tenant rate-limit
+  isolation. The schema and rate-limit Redis keys would extend cleanly
+  for multi-tenant SaaS.
+- **OpenTelemetry exporter is no-op by default.** The SDK is wired; set
+  `OTEL_EXPORTER_OTLP_ENDPOINT` and point it at Jaeger / Tempo to flip
+  live spans on with no code change.
+- **AlertManager routes to a log receiver.** Slack / PagerDuty / email
+  receivers are one config block away; left as log-only for the
+  assessment to keep `docker compose up` self-contained.
+- **`cmd/migrate` is not unit-tested.** It is exercised via integration
+  tests (the e2e harness applies migrations); unit-testing the CLI
+  wrapper would require mocking `*migrate.Migrate`, which CLAUDE.md §4
+  forbids ("do not mock what you don't own").
 
 ---
 

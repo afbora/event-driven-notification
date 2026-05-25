@@ -164,10 +164,15 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 	replaceTmpl := application.NewReplaceTemplate(tmplRepo, wallClock)
 	deleteTmpl := application.NewDeleteTemplate(tmplRepo)
 
-	processUC := application.NewProcessNotification(
-		notifRepo, logRepo, mockProvider, outboundLimiter, broadcaster,
-		idGen, wallClock, nil,
-	)
+	processUC := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        notifRepo,
+		LogRepo:     logRepo,
+		Provider:    mockProvider,
+		RateLimiter: outboundLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       wallClock,
+	})
 
 	// --- worker -------------------------------------------------------
 	asynqSrv := hibikenasynq.NewServer(
