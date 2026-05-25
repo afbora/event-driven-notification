@@ -123,7 +123,10 @@ type fakeNotificationRepo struct {
 	// Reconciler query errors — set per test to drive the error
 	// branches in ReconcileStuckNotifications.Execute. Each is
 	// returned verbatim from the matching Find* fake method.
-	stuckQueuedErr error
+	orphanedPendingErr error
+	stuckProcessingErr error
+	overdueRetryingErr error
+	stuckQueuedErr     error
 }
 
 // SetReconcilerResults primes the next reconciliation sweep's return values.
@@ -237,18 +240,27 @@ func (r *fakeNotificationRepo) List(_ context.Context, filter ports.Notification
 func (r *fakeNotificationRepo) FindOrphanedPending(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.orphanedPendingErr != nil {
+		return nil, r.orphanedPendingErr
+	}
 	return copyNotifications(r.orphanedPending), nil
 }
 
 func (r *fakeNotificationRepo) FindStuckProcessing(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stuckProcessingErr != nil {
+		return nil, r.stuckProcessingErr
+	}
 	return copyNotifications(r.stuckProcessing), nil
 }
 
 func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.overdueRetryingErr != nil {
+		return nil, r.overdueRetryingErr
+	}
 	return copyNotifications(r.overdueRetrying), nil
 }
 
@@ -319,8 +331,9 @@ func (r *fakeBatchRepo) Get(_ context.Context, id domain.BatchID) (*domain.Batch
 // --- NotificationLogRepository -------------------------------------------
 
 type fakeNotificationLogRepo struct {
-	mu      sync.Mutex
-	entries []*domain.NotificationLog
+	mu        sync.Mutex
+	entries   []*domain.NotificationLog
+	appendErr error // optional injection — drives the recordEvent error branch
 }
 
 func newFakeNotificationLogRepo() *fakeNotificationLogRepo { return &fakeNotificationLogRepo{} }
@@ -328,6 +341,9 @@ func newFakeNotificationLogRepo() *fakeNotificationLogRepo { return &fakeNotific
 func (r *fakeNotificationLogRepo) Append(_ context.Context, entry *domain.NotificationLog) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.appendErr != nil {
+		return r.appendErr
+	}
 	r.entries = append(r.entries, entry)
 	return nil
 }

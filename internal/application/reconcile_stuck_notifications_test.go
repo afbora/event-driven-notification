@@ -162,6 +162,104 @@ func TestReconcileStuckNotifications_StuckQueued_HandlerError(t *testing.T) {
 		"counter increments only after a successful enqueue, not before")
 }
 
+// TestReconcileStuckNotifications_OrphanedPending_RepoError: a
+// FindOrphanedPending failure must surface as a wrapped error from
+// Execute and abort the pass before any subsequent sweep runs. Pins
+// the wrap prefix so an operator reading logs knows which sweep
+// failed.
+func TestReconcileStuckNotifications_OrphanedPending_RepoError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	repo.orphanedPendingErr = errors.New("postgres: connection refused")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "find orphaned pending:")
+	require.Equal(t, 0, out.OrphanedPendingReenqueued)
+	require.Empty(t, queue.items)
+}
+
+// TestReconcileStuckNotifications_OrphanedPending_HandlerError: the
+// inner handler can fail mid-iteration (here forced via logRepo's
+// Append error injection — recordEvent propagates it up through
+// handleOrphanedPending). Execute must abort and return the wrapped
+// failure without incrementing the counter.
+func TestReconcileStuckNotifications_OrphanedPending_HandlerError(t *testing.T) {
+	uc, repo, logRepo, queue := newReconcileStuck(t)
+	n := makeNotificationForReconciler(t, repo, "01NOTIFOPERR", domain.StatusPending)
+	repo.SetReconcilerResults([]*domain.Notification{n}, nil, nil, nil)
+	logRepo.appendErr = errors.New("logrepo: write timeout")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "append log entry:",
+		"the handler wraps the log error with its own context")
+	require.Equal(t, 0, out.OrphanedPendingReenqueued)
+	require.Empty(t, queue.items, "no re-enqueue when the log write fails first")
+}
+
+// TestReconcileStuckNotifications_StuckProcessing_RepoError mirrors
+// OrphanedPending_RepoError for the second sweep — different wrap
+// prefix, same loop-abort semantics.
+func TestReconcileStuckNotifications_StuckProcessing_RepoError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	repo.stuckProcessingErr = errors.New("postgres: deadlock detected")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "find stuck processing:")
+	require.Equal(t, 0, out.StuckProcessingFailed)
+	require.Empty(t, queue.items)
+}
+
+// TestReconcileStuckNotifications_StuckProcessing_HandlerError covers
+// the inner-handler error path for the processing sweep — the failure
+// surfaces through recordEvent (logRepo.Append) and the counter stays
+// at zero.
+func TestReconcileStuckNotifications_StuckProcessing_HandlerError(t *testing.T) {
+	uc, repo, logRepo, queue := newReconcileStuck(t)
+	n := makeNotificationForReconciler(t, repo, "01NOTIFSPERR", domain.StatusProcessing)
+	repo.SetReconcilerResults(nil, []*domain.Notification{n}, nil, nil)
+	logRepo.appendErr = errors.New("logrepo: write timeout")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "append log entry:")
+	require.Equal(t, 0, out.StuckProcessingFailed)
+	require.Empty(t, queue.items)
+}
+
+// TestReconcileStuckNotifications_OverdueRetrying_RepoError pins the
+// third sweep's wrap prefix and abort semantics.
+func TestReconcileStuckNotifications_OverdueRetrying_RepoError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	repo.overdueRetryingErr = errors.New("postgres: query cancelled")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "find overdue retrying:")
+	require.Equal(t, 0, out.OverdueRetryingReenqueued)
+	require.Empty(t, queue.items)
+}
+
+// TestReconcileStuckNotifications_OverdueRetrying_HandlerError: the
+// overdue-retrying handler is pure re-enqueue (no log write); the
+// only path that can fail is queue.Enqueue. Pins handleOverdueRetrying's
+// wrap and Execute's loop-abort semantics.
+func TestReconcileStuckNotifications_OverdueRetrying_HandlerError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	n := makeNotificationForReconciler(t, repo, "01NOTIFORERR", domain.StatusRetrying)
+	repo.SetReconcilerResults(nil, nil, []*domain.Notification{n}, nil)
+	queue.enqErr = errors.New("asynq: redis down")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "re-enqueue overdue",
+		"handleOverdueRetrying's wrap must name the recovery path")
+	require.Contains(t, err.Error(), string(n.ID),
+		"the wrap must carry the offending notification id")
+	require.Equal(t, 0, out.OverdueRetryingReenqueued)
+}
+
 // TestReconcileStuckNotifications_OverdueRetrying: notification in retrying
 // past NextRetryAt → re-enqueued, status unchanged (still retrying).
 func TestReconcileStuckNotifications_OverdueRetrying(t *testing.T) {

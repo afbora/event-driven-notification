@@ -89,59 +89,98 @@ func NewReconcileStuckNotifications(
 	}
 }
 
-// Execute runs the three sweeps in order. Each sweep is independent: an
+// Execute runs the four sweeps in order. Each sweep is independent: an
 // error in one does not skip the others — but to keep the use case simple
 // in Phase 2 we propagate the first error encountered. Phase 6 metrics will
 // add partial-progress visibility.
+//
+// The body is a thin dispatcher; each sweep lives in its own method so
+// Execute stays under SonarCloud's cognitive-complexity threshold (S3776)
+// even as the sweep count grows.
 func (uc *ReconcileStuckNotifications) Execute(ctx context.Context, _ ReconcileStuckNotificationsInput) (ReconcileStuckNotificationsOutput, error) {
 	now := uc.clock.Now()
 	out := ReconcileStuckNotificationsOutput{}
 
-	orphaned, err := uc.repo.FindOrphanedPending(ctx, now.Add(-orphanedPendingThreshold), reconcilerBatchSize)
-	if err != nil {
-		return out, fmt.Errorf("find orphaned pending: %w", err)
+	if err := uc.sweepOrphanedPending(ctx, now, &out); err != nil {
+		return out, err
 	}
-	for _, n := range orphaned {
-		if err := uc.handleOrphanedPending(ctx, n, now); err != nil {
-			return out, err
-		}
-		out.OrphanedPendingReenqueued++
+	if err := uc.sweepStuckProcessing(ctx, now, &out); err != nil {
+		return out, err
 	}
-
-	stuck, err := uc.repo.FindStuckProcessing(ctx, now.Add(-stuckProcessingThreshold), reconcilerBatchSize)
-	if err != nil {
-		return out, fmt.Errorf("find stuck processing: %w", err)
+	if err := uc.sweepOverdueRetrying(ctx, now, &out); err != nil {
+		return out, err
 	}
-	for _, n := range stuck {
-		if err := uc.handleStuckProcessing(ctx, n, now); err != nil {
-			return out, err
-		}
-		out.StuckProcessingFailed++
-	}
-
-	overdue, err := uc.repo.FindOverdueRetrying(ctx, now.Add(-overdueRetryingThreshold), reconcilerBatchSize)
-	if err != nil {
-		return out, fmt.Errorf("find overdue retrying: %w", err)
-	}
-	for _, n := range overdue {
-		if err := uc.handleOverdueRetrying(ctx, n); err != nil {
-			return out, err
-		}
-		out.OverdueRetryingReenqueued++
-	}
-
-	stuckQueued, err := uc.repo.FindStuckQueued(ctx, now.Add(-stuckQueuedThreshold), reconcilerBatchSize)
-	if err != nil {
-		return out, fmt.Errorf("find stuck queued: %w", err)
-	}
-	for _, n := range stuckQueued {
-		if err := uc.handleStuckQueued(ctx, n); err != nil {
-			return out, err
-		}
-		out.StuckQueuedReenqueued++
+	if err := uc.sweepStuckQueued(ctx, now, &out); err != nil {
+		return out, err
 	}
 
 	return out, nil
+}
+
+// sweepOrphanedPending finds notifications stuck in pending past the
+// orphaned threshold and re-enqueues each one.
+func (uc *ReconcileStuckNotifications) sweepOrphanedPending(ctx context.Context, now time.Time, out *ReconcileStuckNotificationsOutput) error {
+	rows, err := uc.repo.FindOrphanedPending(ctx, now.Add(-orphanedPendingThreshold), reconcilerBatchSize)
+	if err != nil {
+		return fmt.Errorf("find orphaned pending: %w", err)
+	}
+	for _, n := range rows {
+		if err := uc.handleOrphanedPending(ctx, n, now); err != nil {
+			return err
+		}
+		out.OrphanedPendingReenqueued++
+	}
+	return nil
+}
+
+// sweepStuckProcessing finds notifications a worker claimed but never
+// finished and marks each one failed with reason worker_timeout.
+func (uc *ReconcileStuckNotifications) sweepStuckProcessing(ctx context.Context, now time.Time, out *ReconcileStuckNotificationsOutput) error {
+	rows, err := uc.repo.FindStuckProcessing(ctx, now.Add(-stuckProcessingThreshold), reconcilerBatchSize)
+	if err != nil {
+		return fmt.Errorf("find stuck processing: %w", err)
+	}
+	for _, n := range rows {
+		if err := uc.handleStuckProcessing(ctx, n, now); err != nil {
+			return err
+		}
+		out.StuckProcessingFailed++
+	}
+	return nil
+}
+
+// sweepOverdueRetrying finds retrying notifications whose NextRetryAt
+// has elapsed and re-enqueues each one without changing status.
+func (uc *ReconcileStuckNotifications) sweepOverdueRetrying(ctx context.Context, now time.Time, out *ReconcileStuckNotificationsOutput) error {
+	rows, err := uc.repo.FindOverdueRetrying(ctx, now.Add(-overdueRetryingThreshold), reconcilerBatchSize)
+	if err != nil {
+		return fmt.Errorf("find overdue retrying: %w", err)
+	}
+	for _, n := range rows {
+		if err := uc.handleOverdueRetrying(ctx, n); err != nil {
+			return err
+		}
+		out.OverdueRetryingReenqueued++
+	}
+	return nil
+}
+
+// sweepStuckQueued recovers the dual-write race documented in CLAUDE.md
+// §3.11 — rows that landed in queued with no asynq task waiting. The
+// repo query excludes future-scheduled rows so the recovery does not
+// duplicate the eventual delivery.
+func (uc *ReconcileStuckNotifications) sweepStuckQueued(ctx context.Context, now time.Time, out *ReconcileStuckNotificationsOutput) error {
+	rows, err := uc.repo.FindStuckQueued(ctx, now.Add(-stuckQueuedThreshold), reconcilerBatchSize)
+	if err != nil {
+		return fmt.Errorf("find stuck queued: %w", err)
+	}
+	for _, n := range rows {
+		if err := uc.handleStuckQueued(ctx, n); err != nil {
+			return err
+		}
+		out.StuckQueuedReenqueued++
+	}
+	return nil
 }
 
 // handleOrphanedPending moves the notification into queued and re-enqueues it.
