@@ -16,7 +16,17 @@ const (
 	orphanedPendingThreshold = 5 * time.Minute
 	stuckProcessingThreshold = 5 * time.Minute
 	overdueRetryingThreshold = 1 * time.Minute
-	reconcilerBatchSize      = 100
+
+	// stuckQueuedThreshold catches the dual-write race documented in
+	// CLAUDE.md §3.11: a notification ends up in queued with no asynq
+	// task because the worker dequeued before the API flipped status
+	// from pending to queued. The race window is sub-second, so any
+	// row sitting in queued past this threshold has definitely lost
+	// its task and needs a re-enqueue. 5 minutes mirrors the other
+	// status sweeps and keeps false-positive risk negligible.
+	stuckQueuedThreshold = 5 * time.Minute
+
+	reconcilerBatchSize = 100
 )
 
 // ReconcileStuckNotificationsInput is the parameter bundle for the use case.
@@ -33,19 +43,27 @@ type ReconcileStuckNotificationsOutput struct {
 }
 
 // ReconcileStuckNotifications is the safety-net use case (CLAUDE.md §3.11,
-// ADR-0011). It runs three independent sweeps over the notifications table
+// ADR-0011). It runs four independent sweeps over the notifications table
 // in a single Execute call:
 //
 //   - Orphaned pending — a notification that sat in pending past the
-//     threshold. This is the dual-write race CLAUDE.md §3.11 documents:
-//     the API persisted the row but the enqueue failed before commit.
-//     We move it to queued and enqueue it.
+//     threshold. The API persisted the row but the enqueue failed before
+//     commit. We move it to queued and enqueue it.
 //   - Stuck processing — a worker claimed the notification but never
 //     finished (crash, OOM, network partition). Mark it failed with
 //     reason worker_timeout; the user-facing trace explains the outcome.
 //   - Overdue retrying — a retrying notification whose NextRetryAt has
 //     elapsed but never got picked up (Redis flush, asynq schedule loss).
 //     Re-enqueue without changing status; the worker re-attempts.
+//   - Stuck queued — a notification stranded in queued because the worker
+//     dequeued the asynq task before the API flipped status from pending
+//     to queued (CreateNotification enqueues, then markQueued). The
+//     atomic claim filter is queued|retrying, so the claim was a no-op,
+//     asynq counted the task as delivered, and the row landed in queued
+//     with no task on the queue. Re-enqueue without changing status. The
+//     repo's FindStuckQueued query excludes rows whose scheduled_at is
+//     still in the future — those are correctly waiting on a delayed
+//     asynq task and re-enqueuing them would duplicate the delivery.
 type ReconcileStuckNotifications struct {
 	repo    ports.NotificationRepository
 	logRepo ports.NotificationLogRepository
@@ -112,6 +130,17 @@ func (uc *ReconcileStuckNotifications) Execute(ctx context.Context, _ ReconcileS
 		out.OverdueRetryingReenqueued++
 	}
 
+	stuckQueued, err := uc.repo.FindStuckQueued(ctx, now.Add(-stuckQueuedThreshold), reconcilerBatchSize)
+	if err != nil {
+		return out, fmt.Errorf("find stuck queued: %w", err)
+	}
+	for _, n := range stuckQueued {
+		if err := uc.handleStuckQueued(ctx, n); err != nil {
+			return out, err
+		}
+		out.StuckQueuedReenqueued++
+	}
+
 	return out, nil
 }
 
@@ -149,6 +178,18 @@ func (uc *ReconcileStuckNotifications) handleStuckProcessing(ctx context.Context
 func (uc *ReconcileStuckNotifications) handleOverdueRetrying(ctx context.Context, n *domain.Notification) error {
 	if err := uc.queue.Enqueue(ctx, n.ID, n.Priority, n.IdempotencyKey); err != nil {
 		return fmt.Errorf("re-enqueue overdue %s: %w", n.ID, err)
+	}
+	return nil
+}
+
+// handleStuckQueued re-enqueues a notification that landed in queued with
+// no asynq task on the queue (the dual-write race documented in
+// CLAUDE.md §3.11). Status is already correct — only the missed
+// delivery is restored; no log row is written because there is no
+// new event, just a recovered enqueue.
+func (uc *ReconcileStuckNotifications) handleStuckQueued(ctx context.Context, n *domain.Notification) error {
+	if err := uc.queue.Enqueue(ctx, n.ID, n.Priority, n.IdempotencyKey); err != nil {
+		return fmt.Errorf("re-enqueue stuck queued %s: %w", n.ID, err)
 	}
 	return nil
 }

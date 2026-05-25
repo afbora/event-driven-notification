@@ -112,3 +112,31 @@ WHERE  status         = 'retrying'
 ORDER BY next_retry_at
 LIMIT sqlc.arg('row_limit')
 FOR UPDATE SKIP LOCKED;
+
+-- FindStuckQueued is the recovery target for the dual-write race that
+-- can leave a notification in 'queued' with no asynq task waiting for
+-- it (CLAUDE.md §3.11). A worker dequeues the task before the API has
+-- flipped the row from pending to queued; the atomic claim (filter is
+-- queued|retrying) misses, asynq counts the task as delivered, and
+-- the API then writes 'queued' — task gone, row stuck. Rows that sit
+-- in queued past the threshold are re-enqueued (status stays queued).
+--
+-- The scheduled_at predicate is load-bearing: a scheduled notification
+-- sits in 'queued' from creation until its scheduled_at fires (asynq
+-- holds the task as a delayed entry). Re-enqueueing such a row before
+-- its scheduled_at would produce a duplicate delivery the moment the
+-- delayed task lands. The condition "scheduled_at IS NULL OR
+-- scheduled_at < older_than" means: only re-enqueue when there is no
+-- scheduled time at all (immediate delivery that lost its task) or
+-- the scheduled time itself is more than the threshold in the past
+-- (the delayed task should have fired but did not).
+
+-- name: FindStuckQueued :many
+SELECT *
+FROM   notifications
+WHERE  status      = 'queued'
+  AND  updated_at  < sqlc.arg('older_than')
+  AND  (scheduled_at IS NULL OR scheduled_at < sqlc.arg('older_than'))
+ORDER BY updated_at
+LIMIT sqlc.arg('row_limit')
+FOR UPDATE SKIP LOCKED;
