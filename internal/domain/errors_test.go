@@ -105,6 +105,43 @@ func TestValidationError_NilWrapped(t *testing.T) {
 	}
 }
 
+// TestValidationError_MessageBranches exercises every formatting branch
+// inside ValidationError.Error(): no field + no reason, no field only,
+// no reason only, both. Each variant has a distinct prefix so log lines
+// stay informative regardless of which fields the caller populated.
+func TestValidationError_MessageBranches(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+		given string
+		want  string
+	}{
+		{name: "both empty", field: "", given: "", want: "validation error"},
+		{name: "only reason", field: "", given: "must be E.164", want: "validation error: must be E.164"},
+		{name: "only field", field: "recipient", given: "", want: "validation error: field=recipient"},
+		{name: "both set", field: "recipient", given: "too short", want: "validation error: field=recipient: too short"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &domain.ValidationError{Field: tc.field, Reason: tc.given}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Error() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidationError_UnwrapNil ensures Unwrap returns nil when no
+// sentinel was wrapped — exercised separately because the other
+// Unwrap-bearing tests all carry a non-nil Err.
+func TestValidationError_UnwrapNil(t *testing.T) {
+	err := &domain.ValidationError{Field: "name", Reason: "too short"}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Errorf("Unwrap() = %v, want nil", unwrapped)
+	}
+}
+
 // TestTransitionError covers the typed variant for invalid status transitions.
 // HTTP handlers can pluck out From/To via errors.As to surface a specific
 // 409 Conflict response.
