@@ -170,7 +170,7 @@ func run() error {
 		Middlewares: []func(nethttp.Handler) nethttp.Handler{
 			httpadapter.CorrelationIDMiddleware(idGen),
 			httpadapter.MetricsMiddleware(appMetrics),
-			httpadapter.InboundRateLimitMiddleware(inboundLimiter),
+			httpadapter.InboundRateLimitMiddleware(inboundLimiter, appMetrics),
 			httpadapter.IdempotencyMiddleware(idempStore),
 		},
 	})
