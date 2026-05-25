@@ -158,34 +158,44 @@ func TestNewNotification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validInput()
 			tc.mutate(&in)
-
-			n, err := domain.NewNotification(in, fixedNow)
-
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if n == nil {
-				t.Fatal("notification is nil")
-			}
-			if n.Status != domain.StatusPending {
-				t.Errorf("initial status = %q, want pending", n.Status)
-			}
-			if n.Attempts != 0 {
-				t.Errorf("initial attempts = %d, want 0", n.Attempts)
-			}
-			if !n.CreatedAt.Equal(fixedNow) {
-				t.Errorf("CreatedAt = %v, want %v", n.CreatedAt, fixedNow)
-			}
-			if !n.UpdatedAt.Equal(fixedNow) {
-				t.Errorf("UpdatedAt = %v, want %v", n.UpdatedAt, fixedNow)
-			}
+			assertNewNotification(t, in, tc.wantErr)
 		})
+	}
+}
+
+// assertNewNotification drives NewNotification and applies the per-case
+// assertion: on wantErr the function checks errors.Is and stops; on
+// success it validates the initial entity state (status, attempts, and
+// timestamp parity with the injected clock). Splitting the assertions
+// out of the t.Run closure keeps TestNewNotification's body at a single
+// flow-control step.
+func assertNewNotification(t *testing.T, in domain.NewNotificationInput, wantErr error) {
+	t.Helper()
+	n, err := domain.NewNotification(in, fixedNow)
+
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want errors.Is(_, %v)", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if n == nil {
+		t.Fatal("notification is nil")
+	}
+	if n.Status != domain.StatusPending {
+		t.Errorf("initial status = %q, want pending", n.Status)
+	}
+	if n.Attempts != 0 {
+		t.Errorf("initial attempts = %d, want 0", n.Attempts)
+	}
+	if !n.CreatedAt.Equal(fixedNow) {
+		t.Errorf("CreatedAt = %v, want %v", n.CreatedAt, fixedNow)
+	}
+	if !n.UpdatedAt.Equal(fixedNow) {
+		t.Errorf("UpdatedAt = %v, want %v", n.UpdatedAt, fixedNow)
 	}
 }
 
