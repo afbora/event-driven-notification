@@ -54,10 +54,13 @@ func TestHealthzLive_AlwaysOK(t *testing.T) {
 // every injected dependency check returns nil.
 func TestHealthzReady_AllChecksPass_200(t *testing.T) {
 	called := 0
-	checks := []httpadapter.ReadinessCheck{
-		func(_ context.Context) error { called++; return nil },
-		func(_ context.Context) error { called++; return nil },
-	}
+	// Same closure referenced twice — the intent is "two distinct
+	// registrations that both pass." Declaring it once instead of
+	// inlining a duplicate body satisfies SonarCloud S4144 without
+	// changing behavior: the called counter still hits 2 after the
+	// handler invokes every check.
+	passCheck := func(_ context.Context) error { called++; return nil }
+	checks := []httpadapter.ReadinessCheck{passCheck, passCheck}
 	r := buildHealthTestServer(t, checks)
 
 	req := httptest.NewRequest(nethttp.MethodGet, "/healthz/ready", nil)
