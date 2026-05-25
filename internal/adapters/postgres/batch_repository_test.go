@@ -83,6 +83,34 @@ func TestBatchRepository_CreateAndGet(t *testing.T) {
 	}
 }
 
+// TestBatchRepository_MalformedID covers the parseUUID guard at the
+// top of Create and Get — each rejects ids that do not parse as a UUID
+// before touching the database. Bundled into one test because the
+// assertion shape is identical across both methods.
+func TestBatchRepository_MalformedID(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewBatchRepository(pool)
+	ctx := context.Background()
+	badID := domain.BatchID("not-a-uuid")
+
+	t.Run("Get", func(t *testing.T) {
+		_, err := repo.Get(ctx, badID)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse batch id")
+	})
+
+	t.Run("Create", func(t *testing.T) {
+		// Minimal Batch struct — the parseUUID guard fires before any
+		// field validation or DB write.
+		b := &domain.Batch{ID: badID, CorrelationID: "01CORR", CreatedAt: fixedIntegrationNow}
+		err := repo.Create(ctx, b)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse batch id")
+	})
+}
+
 // TestBatchRepository_Get_NotFound: missing id → ports.ErrNotFound.
 func TestBatchRepository_Get_NotFound(t *testing.T) {
 	pool, cleanup := setupPostgres(t)
