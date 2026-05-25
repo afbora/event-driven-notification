@@ -30,11 +30,19 @@ func NewTemplateRepository(pool *pgxpool.Pool) *TemplateRepository {
 	}
 }
 
+// parseTemplateIDErr formats the standard wrap used wherever a
+// TemplateID string fails to parse as a pgtype UUID. Centralizing the
+// format satisfies SonarCloud S1192 (literal duplicated four times)
+// without scattering a const across the four CRUD methods.
+func parseTemplateIDErr(id domain.TemplateID, err error) error {
+	return fmt.Errorf("parse template id %q: %w", id, err)
+}
+
 // Create persists a new template.
 func (r *TemplateRepository) Create(ctx context.Context, t *domain.Template) error {
 	id, err := parseUUID(string(t.ID))
 	if err != nil {
-		return fmt.Errorf("parse template id %q: %w", t.ID, err)
+		return parseTemplateIDErr(t.ID, err)
 	}
 	if err := r.q.CreateTemplate(ctx, sqlc.CreateTemplateParams{
 		ID:        id,
@@ -53,7 +61,7 @@ func (r *TemplateRepository) Create(ctx context.Context, t *domain.Template) err
 func (r *TemplateRepository) Get(ctx context.Context, id domain.TemplateID) (*domain.Template, error) {
 	pgID, err := parseUUID(string(id))
 	if err != nil {
-		return nil, fmt.Errorf("parse template id %q: %w", id, err)
+		return nil, parseTemplateIDErr(id, err)
 	}
 	row, err := r.q.GetTemplate(ctx, pgID)
 	if err != nil {
@@ -101,7 +109,7 @@ func (r *TemplateRepository) List(ctx context.Context, limit int) ([]*domain.Tem
 func (r *TemplateRepository) Update(ctx context.Context, t *domain.Template) error {
 	pgID, err := parseUUID(string(t.ID))
 	if err != nil {
-		return fmt.Errorf("parse template id %q: %w", t.ID, err)
+		return parseTemplateIDErr(t.ID, err)
 	}
 	if err := r.q.UpdateTemplate(ctx, sqlc.UpdateTemplateParams{
 		ID:      pgID,
