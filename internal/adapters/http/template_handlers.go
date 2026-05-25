@@ -16,6 +16,13 @@ import (
 // the matching application use case; the only domain-specific work is
 // in the toAPITemplate / fromAPI* mappers.
 
+// wrapMapTemplate annotates a toAPITemplate failure with a consistent
+// prefix. Centralizing the format satisfies SonarCloud S1192 (literal
+// duplicated four times across the CRUD handlers and the page mapper).
+func wrapMapTemplate(err error) error {
+	return fmt.Errorf("map template: %w", err)
+}
+
 // --- POST /api/v1/templates ----------------------------------------------
 
 // CreateTemplate creates a new template and returns 201 with the new
@@ -39,7 +46,7 @@ func (s *Server) CreateTemplate(ctx context.Context, req api.CreateTemplateReque
 
 	out, err := toAPITemplate(tpl)
 	if err != nil {
-		return nil, fmt.Errorf("map template: %w", err)
+		return nil, wrapMapTemplate(err)
 	}
 	location := "/api/v1/templates/" + string(tpl.ID)
 	return api.CreateTemplate201JSONResponse{
@@ -102,7 +109,7 @@ func (s *Server) GetTemplate(ctx context.Context, req api.GetTemplateRequestObje
 
 	out, err := toAPITemplate(tpl)
 	if err != nil {
-		return nil, fmt.Errorf("map template: %w", err)
+		return nil, wrapMapTemplate(err)
 	}
 	return api.GetTemplate200JSONResponse{Body: out}, nil
 }
@@ -132,7 +139,7 @@ func (s *Server) ReplaceTemplate(ctx context.Context, req api.ReplaceTemplateReq
 
 	out, err := toAPITemplate(tpl)
 	if err != nil {
-		return nil, fmt.Errorf("map template: %w", err)
+		return nil, wrapMapTemplate(err)
 	}
 	return api.ReplaceTemplate200JSONResponse{Body: out}, nil
 }
@@ -183,7 +190,7 @@ func toAPITemplatePage(out application.ListTemplatesOutput) (api.TemplatePage, e
 	for _, t := range out.Templates {
 		item, err := toAPITemplate(t)
 		if err != nil {
-			return api.TemplatePage{}, fmt.Errorf("map template: %w", err)
+			return api.TemplatePage{}, wrapMapTemplate(err)
 		}
 		items = append(items, item)
 	}
