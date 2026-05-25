@@ -580,6 +580,16 @@ func forceNextRetryAt(t *testing.T, pool *pgxpool.Pool, id domain.NotificationID
 	require.NoError(t, err)
 }
 
+// forceScheduledAt sets scheduled_at directly so the stuck-queued sweep
+// test can prove the query excludes rows whose delayed asynq task has
+// not fired yet — re-enqueuing those would duplicate the eventual
+// delivery (CLAUDE.md §3.11).
+func forceScheduledAt(t *testing.T, pool *pgxpool.Pool, id domain.NotificationID, scheduledAt time.Time) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `UPDATE notifications SET scheduled_at = $2 WHERE id = $1`, string(id), scheduledAt)
+	require.NoError(t, err)
+}
+
 // TestFindOrphanedPending_HappyPath: pending rows older than the threshold
 // are returned; recent pending and non-pending rows are not.
 func TestFindOrphanedPending_HappyPath(t *testing.T) {
@@ -663,6 +673,99 @@ func TestFindOverdueRetrying_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	require.Equal(t, integrationNotificationID("80"), items[0].ID)
+}
+
+// TestFindStuckQueued_HappyPath: queued rows whose updated_at is older
+// than the threshold are returned (the dual-write race recovery target
+// from CLAUDE.md §3.11); recent queued rows and non-queued rows are
+// not. Pinned shape against future churn around the sweep.
+func TestFindStuckQueued_HappyPath(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	threshold := fixedIntegrationNow.Add(-5 * time.Minute)
+
+	// Stuck queued — updated_at predates the threshold (the asynq task
+	// was lost minutes ago, the row never moved on).
+	seedAtStatus(t, repo, pool, integrationNotificationID("a0"), domain.StatusQueued)
+	forceTimestamps(t, pool, integrationNotificationID("a0"), time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+
+	// Recent queued — fresh, race window may still be live; do NOT
+	// return so the reconciler does not re-enqueue a row whose worker
+	// is about to pick it up.
+	seedAtStatus(t, repo, pool, integrationNotificationID("a1"), domain.StatusQueued)
+	forceTimestamps(t, pool, integrationNotificationID("a1"), time.Time{}, fixedIntegrationNow.Add(-1*time.Minute))
+
+	// Old pending — different sweep (FindOrphanedPending), not this one.
+	seedTimestamped(t, repo, integrationNotificationID("a2"), fixedIntegrationNow.Add(-10*time.Minute))
+
+	// Old delivered — terminal, never stuck.
+	seedAtStatus(t, repo, pool, integrationNotificationID("a3"), domain.StatusDelivered)
+	forceTimestamps(t, pool, integrationNotificationID("a3"), time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+
+	items, err := repo.FindStuckQueued(ctx, threshold, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, integrationNotificationID("a0"), items[0].ID)
+}
+
+// TestFindStuckQueued_ExcludesFutureScheduled: a notification scheduled
+// for the future sits in 'queued' from creation until its scheduled_at
+// fires (asynq holds the task as a delayed entry). Re-enqueuing such a
+// row would duplicate the eventual delivery the moment the delayed
+// task lands — exactly the regression the scheduled_at predicate in
+// FindStuckQueued exists to prevent. This test pins that behavior.
+func TestFindStuckQueued_ExcludesFutureScheduled(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	threshold := fixedIntegrationNow.Add(-5 * time.Minute)
+
+	// Future scheduled — created 10 minutes ago (updated_at predates
+	// threshold), scheduled to fire 30 minutes from now. Asynq's
+	// delayed task is alive; this row is NOT stuck.
+	seedAtStatus(t, repo, pool, integrationNotificationID("b0"), domain.StatusQueued)
+	forceTimestamps(t, pool, integrationNotificationID("b0"), time.Time{}, fixedIntegrationNow.Add(-10*time.Minute))
+	forceScheduledAt(t, pool, integrationNotificationID("b0"), fixedIntegrationNow.Add(30*time.Minute))
+
+	// Overdue scheduled — scheduled_at is more than 5 minutes in the
+	// past, the delayed task should have fired already; this IS stuck
+	// (asynq scheduler crash, Redis flush, etc.) and must be returned.
+	seedAtStatus(t, repo, pool, integrationNotificationID("b1"), domain.StatusQueued)
+	forceTimestamps(t, pool, integrationNotificationID("b1"), time.Time{}, fixedIntegrationNow.Add(-15*time.Minute))
+	forceScheduledAt(t, pool, integrationNotificationID("b1"), fixedIntegrationNow.Add(-10*time.Minute))
+
+	items, err := repo.FindStuckQueued(ctx, threshold, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1,
+		"only the overdue-scheduled row must surface; the future-scheduled row must NOT (re-enqueuing it would duplicate the delivery)")
+	require.Equal(t, integrationNotificationID("b1"), items[0].ID)
+}
+
+// TestFindStuckQueued_DBError_WrapsError: when the underlying query
+// fails — here forced via an already-cancelled context so pgx
+// short-circuits — the adapter must wrap the error with the
+// "find stuck queued:" prefix so operators reading reconciler logs
+// can locate which sweep blew up. This pins the error-path contract
+// without needing a fault-injecting Docker network manipulation.
+func TestFindStuckQueued_DBError_WrapsError(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ensure the query observes a cancelled context
+
+	_, err := repo.FindStuckQueued(ctx, fixedIntegrationNow, 10)
+	require.Error(t, err, "cancelled context must surface as an error from pgx")
+	require.Contains(t, err.Error(), "find stuck queued:",
+		"the adapter must wrap the failure with the sweep name for log triage")
 }
 
 // TestReconcilerQueries_RespectLimit: limit caps the batch size.

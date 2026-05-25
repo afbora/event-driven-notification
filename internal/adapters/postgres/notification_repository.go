@@ -297,6 +297,27 @@ func (r *NotificationRepository) FindOverdueRetrying(ctx context.Context, before
 	return rowsToNotifications(rows)
 }
 
+// FindStuckQueued returns queued notifications whose updated_at is
+// older than olderThan, capped at limit. CLAUDE.md §3.11: this catches
+// the dual-write race where the worker dequeues the asynq task before
+// CreateNotification has flipped status from pending to queued — the
+// atomic claim misses, asynq drops the task, the API writes queued,
+// and the row is then stranded in queued forever with no task on the
+// queue. The reconciler re-enqueues without changing status (the row
+// is already correct; only the missed delivery is restored).
+// FOR UPDATE SKIP LOCKED lets multiple reconciler instances scan
+// concurrently without conflicting claims.
+func (r *NotificationRepository) FindStuckQueued(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error) {
+	rows, err := r.q.FindStuckQueued(ctx, sqlc.FindStuckQueuedParams{
+		OlderThan: timeToTimestamptz(olderThan),
+		RowLimit:  int32(limit), //nolint:gosec // limit is operator-controlled, small
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find stuck queued: %w", err)
+	}
+	return rowsToNotifications(rows)
+}
+
 // rowsToNotifications converts a slice of sqlc rows into domain entities,
 // short-circuiting on the first conversion failure.
 func rowsToNotifications(rows []sqlc.Notification) ([]*domain.Notification, error) {

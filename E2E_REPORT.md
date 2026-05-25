@@ -229,7 +229,7 @@
 ### J) Reconciler
 - **Stuck processing (10 min behind) → failed:** manual INSERT; within one minute the reconciler logs:
   ```
-  reconciler-1 | {"msg":"reconciler pass complete","stuck_processing_failed":1,"overdue_retrying_reenqueued":0,"orphaned_pending_reenqueued":1,...}
+  reconciler-1 | {"msg":"reconciler pass complete","stuck_processing_failed":1,"overdue_retrying_reenqueued":0,"orphaned_pending_reenqueued":1,"stuck_queued_reenqueued":0,...}
   ```
   Final row state:
   ```
@@ -239,7 +239,8 @@
   ```
   id=019e5fff-0000-7000-8000-aaaaaaaa0002 | status=delivered | attempts=1
   ```
-- **`SELECT ... FOR UPDATE SKIP LOCKED`:** present in all three reconciler queries (`sqlc/queries/notifications.sql:95,104,114`) — concurrent reconciler instances can run without lock contention (verified in code; a live two-instance race test was not performed because the compose stack defines a single reconciler).
+- **Stuck queued (dual-write race recovery, CLAUDE.md §3.11):** the worker may dequeue an asynq task before `CreateNotification` flips status from `pending` to `queued`; the atomic claim (filter `queued|retrying`) misses, asynq counts the task as delivered, the API then writes `queued` — the row sits in `queued` with no task. The `FindStuckQueued` sweep (added in `fix/reconciler-queued-sweep`) re-enqueues rows whose `updated_at < NOW() - 5min`. The query carries a `scheduled_at IS NULL OR scheduled_at < older_than` guard so future-scheduled rows (whose delayed asynq task is alive) are NOT re-enqueued — pinned by integration test `TestFindStuckQueued_ExcludesFutureScheduled`. Status stays `queued` and no log row is written; only the missed delivery is restored.
+- **`SELECT ... FOR UPDATE SKIP LOCKED`:** present in all four reconciler queries — concurrent reconciler instances can run without lock contention (verified in code; a live two-instance race test was not performed because the compose stack defines a single reconciler).
 
 ### K) Cancel
 - **Scheduled notification + PATCH /cancel → 200:**

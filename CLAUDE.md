@@ -176,13 +176,15 @@ Even with perfect retry logic, notifications can get stuck:
 - **Worker crashes mid-processing** → notification stuck in `processing` state.
 - **Redis flushes** → in-flight retry schedule is lost.
 - **Database deadlock** → status update fails silently.
-- **API-to-queue write fails after DB commit** → notification orphaned in `pending` state, never enqueued. (This is the dual-write race documented in ADR-0011.)
+- **API-to-queue write fails after DB commit** → notification orphaned in `pending` state, never enqueued. (One half of the dual-write race documented in ADR-0011.)
+- **Worker dequeues before API flips `pending → queued`** → atomic claim (filter `queued|retrying`) is a no-op, asynq counts the task as delivered, the API then writes `queued` → the row sits in `queued` with no task on the queue. (The other half of the dual-write race.)
 
 A reconciliation job runs every minute (via the `cmd/reconciler` binary) and:
 
 1. Finds notifications in `processing` for more than 5 minutes → marks `failed` with reason `worker_timeout`.
 2. Finds notifications in `retrying` with `next_retry_at < NOW() - 1 minute` → re-enqueues them.
-3. Finds notifications in `pending` for more than 5 minutes → re-enqueues them. (This catches the dual-write race: notification persisted but enqueue failed.)
+3. Finds notifications in `pending` for more than 5 minutes → re-enqueues them. (Catches the first half of the dual-write race: notification persisted but enqueue failed.)
+4. Finds notifications in `queued` whose `updated_at < NOW() - 5 minutes` **and** (`scheduled_at IS NULL` OR `scheduled_at < NOW() - 5 minutes`) → re-enqueues them. Status stays `queued`; no log row is written because there is no new event, just a missed delivery being restored. The `scheduled_at` predicate is load-bearing — future-scheduled rows legitimately sit in `queued` until asynq's delayed task fires, and re-enqueuing them would duplicate the eventual delivery. (Catches the second half of the dual-write race; see `FindStuckQueued` in `sqlc/queries/notifications.sql`.)
 
 **Concurrency:** The reconciler uses PostgreSQL's `SELECT ... FOR UPDATE SKIP LOCKED` semantics when claiming rows for reconciliation. This allows running multiple reconciler instances horizontally without conflicting claims — each instance locks only the rows it can process; competing instances skip locked rows without waiting. If a reconciler crashes mid-transaction, the lock is released automatically and the row becomes visible again to other reconcilers.
 

@@ -60,6 +60,16 @@ type NotificationRepository interface {
 	FindOrphanedPending(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error)
 	FindStuckProcessing(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error)
 	FindOverdueRetrying(ctx context.Context, before time.Time, limit int) ([]*domain.Notification, error)
+
+	// FindStuckQueued returns notifications that have sat in queued for
+	// longer than olderThan. This catches the dual-write race documented
+	// in CLAUDE.md §3.11: the API persisted+enqueued, the worker
+	// dequeued and tried to atomically claim the row while it was still
+	// pending (claim filter is queued|retrying), the claim was a no-op
+	// so asynq consumed the task, and the API then flipped the row to
+	// queued — leaving it in queued forever with no task on the queue.
+	// The recovery is a re-enqueue; the row's status stays queued.
+	FindStuckQueued(ctx context.Context, olderThan time.Time, limit int) ([]*domain.Notification, error)
 }
 
 // NotificationFilter is the parameter bundle for NotificationRepository.List.

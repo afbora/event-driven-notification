@@ -278,6 +278,77 @@ func (q *Queries) FindStuckProcessing(ctx context.Context, arg FindStuckProcessi
 	return items, nil
 }
 
+const findStuckQueued = `-- name: FindStuckQueued :many
+
+SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
+FROM   notifications
+WHERE  status      = 'queued'
+  AND  updated_at  < $1
+  AND  (scheduled_at IS NULL OR scheduled_at < $1)
+ORDER BY updated_at
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
+
+type FindStuckQueuedParams struct {
+	OlderThan pgtype.Timestamptz
+	RowLimit  int32
+}
+
+// FindStuckQueued is the recovery target for the dual-write race that
+// can leave a notification in 'queued' with no asynq task waiting for
+// it (CLAUDE.md §3.11). A worker dequeues the task before the API has
+// flipped the row from pending to queued; the atomic claim (filter is
+// queued|retrying) misses, asynq counts the task as delivered, and
+// the API then writes 'queued' — task gone, row stuck. Rows that sit
+// in queued past the threshold are re-enqueued (status stays queued).
+//
+// The scheduled_at predicate is load-bearing: a scheduled notification
+// sits in 'queued' from creation until its scheduled_at fires (asynq
+// holds the task as a delayed entry). Re-enqueueing such a row before
+// its scheduled_at would produce a duplicate delivery the moment the
+// delayed task lands. The condition "scheduled_at IS NULL OR
+// scheduled_at < older_than" means: only re-enqueue when there is no
+// scheduled time at all (immediate delivery that lost its task) or
+// the scheduled time itself is more than the threshold in the past
+// (the delayed task should have fired but did not).
+func (q *Queries) FindStuckQueued(ctx context.Context, arg FindStuckQueuedParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, findStuckQueued, arg.OlderThan, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.IdempotencyKey,
+			&i.CorrelationID,
+			&i.Channel,
+			&i.Priority,
+			&i.Recipient,
+			&i.Content,
+			&i.Status,
+			&i.Attempts,
+			&i.LastError,
+			&i.NextRetryAt,
+			&i.ScheduledAt,
+			&i.TemplateID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNotification = `-- name: GetNotification :one
 SELECT id, batch_id, idempotency_key, correlation_id, channel, priority, recipient, content, status, attempts, last_error, next_retry_at, scheduled_at, template_id, created_at, updated_at
 FROM notifications
