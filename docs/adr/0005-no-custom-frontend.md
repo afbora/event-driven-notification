@@ -35,7 +35,7 @@ All five are wired in `docker-compose.yml` and reachable on dedicated ports (see
 **Positive:**
 
 - The backend quality budget is preserved entirely for the backend.
-- Each UI in the stack is a production-grade tool, immediately familiar to anyone who has operated a Go service. The reviewer recognises them.
+- Each UI in the stack is a production-grade tool, immediately familiar to anyone who has operated a Go service. The reviewer recognizes them.
 - No bespoke frontend code to maintain, secure, or document.
 - Demonstrates judgement: choosing the right tool for the audience is a senior-level skill.
 

@@ -22,7 +22,7 @@ The brief's explicit requirement:
 
 > **Docker Compose:** One-command setup (`docker-compose up`)
 
-"One-command" is hard to honour if the prerequisite is "copy this file first."
+"One-command" is hard to honor if the prerequisite is "copy this file first."
 
 ## Decision
 
