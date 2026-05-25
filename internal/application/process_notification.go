@@ -52,27 +52,35 @@ type ProcessNotification struct {
 	metrics     MetricsRecorder
 }
 
-// NewProcessNotification wires the dependencies. Every port is
-// required except metricsRec — tests pass nil to skip emit.
-func NewProcessNotification(
-	repo ports.NotificationRepository,
-	logRepo ports.NotificationLogRepository,
-	provider ports.Provider,
-	rateLimiter ports.RateLimiter,
-	broadcaster ports.StatusBroadcaster,
-	idGen ports.IDGenerator,
-	clock ports.Clock,
-	metricsRec MetricsRecorder,
-) *ProcessNotification {
+// ProcessNotificationDeps bundles the eight ports that ProcessNotification
+// composes. Bundling keeps NewProcessNotification's signature within
+// SonarCloud's parameter-count limit (S107) and makes the wiring code at
+// every call site self-documenting via field names rather than positional
+// order. Metrics is optional — tests pass a zero MetricsRecorder (nil)
+// to skip emission.
+type ProcessNotificationDeps struct {
+	Repo        ports.NotificationRepository
+	LogRepo     ports.NotificationLogRepository
+	Provider    ports.Provider
+	RateLimiter ports.RateLimiter
+	Broadcaster ports.StatusBroadcaster
+	IDGen       ports.IDGenerator
+	Clock       ports.Clock
+	Metrics     MetricsRecorder
+}
+
+// NewProcessNotification wires the dependencies. Every port in deps is
+// required except Metrics — tests pass nil to skip emit.
+func NewProcessNotification(deps ProcessNotificationDeps) *ProcessNotification {
 	return &ProcessNotification{
-		repo:        repo,
-		logRepo:     logRepo,
-		provider:    provider,
-		rateLimiter: rateLimiter,
-		broadcaster: broadcaster,
-		idGen:       idGen,
-		clock:       clock,
-		metrics:     metricsRec,
+		repo:        deps.Repo,
+		logRepo:     deps.LogRepo,
+		provider:    deps.Provider,
+		rateLimiter: deps.RateLimiter,
+		broadcaster: deps.Broadcaster,
+		idGen:       deps.IDGen,
+		clock:       deps.Clock,
+		metrics:     deps.Metrics,
 	}
 }
 

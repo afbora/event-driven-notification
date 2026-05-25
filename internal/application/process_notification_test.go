@@ -33,7 +33,15 @@ func newProcessFixture(t *testing.T, providerResult domain.DeliveryResult, rateA
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
 
-	uc := application.NewProcessNotification(repo, logRepo, provider, rateLimiter, broadcaster, idGen, clock, nil)
+	uc := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        repo,
+		LogRepo:     logRepo,
+		Provider:    provider,
+		RateLimiter: rateLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       clock,
+	})
 
 	return processFixture{
 		uc:          uc,

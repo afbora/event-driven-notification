@@ -106,12 +106,16 @@ func run() error {
 	guardedProvider := circuit.New(registry, breakerSettings("provider-registry"))
 
 	// --- application use case ------------------------------------------
-	processUC := application.NewProcessNotification(
-		notifRepo, logRepo,
-		guardedProvider, outboundLimiter, broadcaster,
-		idGen, wallClock,
-		appMetrics,
-	)
+	processUC := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        notifRepo,
+		LogRepo:     logRepo,
+		Provider:    guardedProvider,
+		RateLimiter: outboundLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       wallClock,
+		Metrics:     appMetrics,
+	})
 
 	// --- asynq server --------------------------------------------------
 	srv := hibikenasynq.NewServer(
