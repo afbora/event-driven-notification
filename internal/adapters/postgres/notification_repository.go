@@ -37,6 +37,22 @@ func NewNotificationRepository(pool *pgxpool.Pool) *NotificationRepository {
 	}
 }
 
+// parseNotificationIDErr formats the standard wrap used wherever a
+// NotificationID string fails to parse as a pgtype UUID. Centralizing
+// the format satisfies SonarCloud S1192 (literal duplicated three or
+// more times) without scattering a const across the file.
+func parseNotificationIDErr(id domain.NotificationID, err error) error {
+	return fmt.Errorf("parse notification id %q: %w", id, err)
+}
+
+// wrapNotificationErr annotates a sentinel error (typically
+// ports.ErrNotFound or ports.ErrAlreadyClaimed) with the offending
+// notification id. Callers keep using errors.Is on the sentinel; this
+// just adds context to the message.
+func wrapNotificationErr(sentinel error, id domain.NotificationID) error {
+	return fmt.Errorf("%w: notification %s", sentinel, id)
+}
+
 // Create persists a new notification.
 func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notification) error {
 	params, err := notificationToCreateParams(n)
@@ -67,12 +83,12 @@ func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notificat
 func (r *NotificationRepository) ClaimForProcessing(ctx context.Context, id domain.NotificationID, now time.Time) (*domain.Notification, error) {
 	pgID, err := parseUUID(string(id))
 	if err != nil {
-		return nil, fmt.Errorf("parse notification id %q: %w", id, err)
+		return nil, parseNotificationIDErr(id, err)
 	}
 
 	if _, err := r.q.GetNotification(ctx, pgID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("%w: notification %s", ports.ErrNotFound, id)
+			return nil, wrapNotificationErr(ports.ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("get notification %s: %w", id, err)
 	}
@@ -83,7 +99,7 @@ func (r *NotificationRepository) ClaimForProcessing(ctx context.Context, id doma
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("%w: notification %s", ports.ErrAlreadyClaimed, id)
+			return nil, wrapNotificationErr(ports.ErrAlreadyClaimed, id)
 		}
 		return nil, fmt.Errorf("claim notification %s: %w", id, err)
 	}
@@ -102,7 +118,7 @@ func (r *NotificationRepository) ClaimForProcessing(ctx context.Context, id doma
 func (r *NotificationRepository) UpdateStatus(ctx context.Context, n *domain.Notification, expectedSource domain.Status) error {
 	pgID, err := parseUUID(string(n.ID))
 	if err != nil {
-		return fmt.Errorf("parse notification id %q: %w", n.ID, err)
+		return parseNotificationIDErr(n.ID, err)
 	}
 
 	rows, err := r.q.UpdateNotificationStatus(ctx, sqlc.UpdateNotificationStatusParams{
@@ -130,12 +146,12 @@ func (r *NotificationRepository) UpdateStatus(ctx context.Context, n *domain.Not
 func (r *NotificationRepository) Get(ctx context.Context, id domain.NotificationID) (*domain.Notification, error) {
 	pgID, err := parseUUID(string(id))
 	if err != nil {
-		return nil, fmt.Errorf("parse notification id %q: %w", id, err)
+		return nil, parseNotificationIDErr(id, err)
 	}
 	row, err := r.q.GetNotification(ctx, pgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("%w: notification %s", ports.ErrNotFound, id)
+			return nil, wrapNotificationErr(ports.ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("get notification %s: %w", id, err)
 	}
