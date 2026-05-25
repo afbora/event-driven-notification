@@ -18,7 +18,7 @@ But one is named without elaboration:
 
 > **Failure Handling**
 
-The candidate is expected to define what "failure handling" means in this context. A narrow reading would scope it to retry behaviour. A broader reading would scope it to **the entire system's response to failure** — automated recovery, human notification, and observability.
+The candidate is expected to define what "failure handling" means in this context. A narrow reading would scope it to retry behavior. A broader reading would scope it to **the entire system's response to failure** — automated recovery, human notification, and observability.
 
 The brief also says:
 

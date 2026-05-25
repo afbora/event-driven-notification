@@ -47,7 +47,7 @@ The five-minute threshold for orphaned pending is deliberately conservative: the
 
 **Positive:**
 
-- No new table, no new poller, no new container. The defence reuses infrastructure that exists for other reasons.
+- No new table, no new poller, no new container. The defense reuses infrastructure that exists for other reasons.
 - The dual-write race is closed with a known maximum data delay of ~5 minutes — acceptable for notification semantics.
 - A single mental model for "things going wrong in the worker": the reconciler is the safety net for **all** of them.
 - Easy to surface via metrics — every reconciler pass emits how many rows it touched, by category.
@@ -61,9 +61,9 @@ The five-minute threshold for orphaned pending is deliberately conservative: the
 ## Alternatives Considered
 
 1. **Outbox pattern** — rejected for this project. Operationally heavier (new table, new poller, new metrics, new failure mode). The recovery latency advantage (seconds vs minutes) does not justify the complexity at this scale and is not required by the brief.
-2. **Synchronous 2PC across Postgres + Redis** — rejected. Redis does not support 2PC meaningfully. Even if it did, 2PC is operationally unloved in production for good reasons (latency under partition, locking behaviour).
+2. **Synchronous 2PC across Postgres + Redis** — rejected. Redis does not support 2PC meaningfully. Even if it did, 2PC is operationally unloved in production for good reasons (latency under partition, locking behavior).
 3. **Enqueue first, then persist** — rejected. The queue payload references the notification ID; we would have to generate the ID before persisting, then handle the case where the persist fails after the enqueue succeeded (a worker would process a notification that doesn't exist in the DB).
-4. **Retry the dual write inside the same request** — partial mitigation but doesn't help if the API process crashes between the two calls. We do already use a bounded retry-with-jitter on the enqueue side as belt-and-braces, but the reconciler is the load-bearing defence.
+4. **Retry the dual write inside the same request** — partial mitigation but doesn't help if the API process crashes between the two calls. We do already use a bounded retry-with-jitter on the enqueue side as belt-and-braces, but the reconciler is the load-bearing defense.
 
 ## Related
 

@@ -51,7 +51,7 @@ If the second `UPDATE` returns zero rows affected, something has gone wrong (the
 
 - **Exactly-once user-visible delivery semantics** in the face of at-least-once queue delivery, worker scaling, and reconciler races.
 - Eliminates the most common notification-system bug (duplicate sends) without distributed locks, leader election, or distributed transactions.
-- The defence is in the database, not in the worker logic, so it is impossible for a future worker bug to bypass it.
+- The defense is in the database, not in the worker logic, so it is impossible for a future worker bug to bypass it.
 
 **Negative:**
 
@@ -63,7 +63,7 @@ If the second `UPDATE` returns zero rows affected, something has gone wrong (the
 
 1. **Redis distributed lock** (e.g., Redlock) — rejected. Distributed locks have well-known correctness issues; we would introduce a new failure mode (lock not released after worker crash, lock acquired by two workers due to clock skew). The DB-level UPDATE is simpler, correct by construction, and uses infrastructure we already have.
 2. **Database advisory lock** (`pg_advisory_lock`) — rejected. Advisory locks would work but require careful release on every code path, including panics. The conditional UPDATE has no equivalent burden.
-3. **Asynq unique-task TTL alone** — rejected as the sole defence. asynq's uniqueness applies at enqueue time, but the reconciler re-enqueues, and asynq itself can redeliver. Unique-task TTL is a useful additional layer (it dedups at enqueue) but it does not protect against the worker-side races.
+3. **Asynq unique-task TTL alone** — rejected as the sole defense. asynq's uniqueness applies at enqueue time, but the reconciler re-enqueues, and asynq itself can redeliver. Unique-task TTL is a useful additional layer (it dedups at enqueue) but it does not protect against the worker-side races.
 4. **Skip the claim, accept rare duplicates** — rejected. "Rare duplicates" is a user-facing defect, particularly painful for SMS (cost) and Push (annoyance). The cost of the extra DB write is far less than the cost of one duplicate user-visible notification.
 
 ## Related
