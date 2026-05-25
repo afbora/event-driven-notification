@@ -1,14 +1,19 @@
-// rate_limit.js — exercises the outbound rate limiter.
+// rate_limit.js — exercises the OUTBOUND rate limiter.
 //
 // Goal (PLAN.md phase 5 task 23): drive 200 req/sec at a single
 // channel (above the 100/sec outbound cap). Asserts:
-//   - the API accepts every request (the inbound limiter is way
-//     higher than 200 rps in the compose default),
+//   - the API accepts every request (the loadtest overlay raises
+//     the inbound limit to 100 000 req/min so it is never the gate;
+//     see docker-compose.loadtest.yml for why),
 //   - no notification ends up in the dead-letter queue purely due to
 //     rate limiting — they should fall into retrying and eventually
 //     deliver as the limiter window rolls forward.
 //
-// Compose run:
+// Compose run (the loadtest overlay is REQUIRED — without it the
+// docker-compose.yml inbound cap of 60 req/min would 429 most
+// requests and the outbound limiter would never be exercised):
+//   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+//     up -d api worker reconciler postgres redis
 //   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
 //     run --rm k6 run /scripts/rate_limit.js
 

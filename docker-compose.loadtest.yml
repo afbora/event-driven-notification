@@ -3,13 +3,36 @@
 # Layers on top of docker-compose.yml; use both:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+#     up -d api worker reconciler postgres redis
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
 #     run --rm k6 run /scripts/<scenario>.js
 #
 # The k6 service joins the same network as api/worker so it can hit
 # http://api:8080 directly — no host-port mapping, no public exposure.
 # Scripts are mounted read-only from tests/load/.
+#
+# Why the api override exists:
+#   The production-default inbound rate limit (60 req/min/IP) protects
+#   the public API from abuse, but it also blocks the load scenarios —
+#   k6 drives 200+ rps from a single host, so without raising the cap
+#   the first 60 requests succeed and the remaining 23 940 see 429.
+#   That makes outbound-limit verification (the goal of rate_limit.js)
+#   impossible because the requests never reach the worker. This
+#   overlay raises the inbound cap so the scenarios can isolate the
+#   outbound limiter; the outbound cap itself is NOT touched — the
+#   point of the rate-limit scenario is to prove it throttles.
 
 services:
+  api:
+    environment:
+      # Raise the inbound limit to a number k6 cannot realistically
+      # hit (100 000 req/min ≈ 1 666 rps); the docker-compose.yml
+      # default of 60 req/min stays in force when this overlay is
+      # not used. Window stays at 1m so the budget shape is identical
+      # — only the magnitude changes.
+      INBOUND_RATE_LIMIT:  "100000"
+      INBOUND_RATE_WINDOW: "1m"
+
   k6:
     image: grafana/k6:0.54.0
     profiles:
