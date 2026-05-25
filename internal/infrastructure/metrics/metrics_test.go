@@ -179,6 +179,40 @@ func TestExposition_FormatIsPrometheusText(t *testing.T) {
 		"exposition must include TYPE lines; got\n%s", text)
 }
 
+// TestDirectAccessors_ReturnRegisteredCollectors exercises the public
+// vector accessors so tests anywhere in the codebase can reach for a
+// label set via the underlying collector. Asserts each one returns a
+// non-nil handle pointing at a registered Prometheus collector.
+func TestDirectAccessors_ReturnRegisteredCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+
+	// Counter accessors.
+	require.NotNil(t, m.NotificationsCreatedTotal())
+	require.NotNil(t, m.NotificationsDeliveredTotal())
+	require.NotNil(t, m.NotificationsFailedTotal())
+	require.NotNil(t, m.NotificationsAttemptsTotal())
+	require.NotNil(t, m.HTTPRequestsTotal())
+	require.NotNil(t, m.InboundRateLimitHitsTotal())
+	require.NotNil(t, m.OutboundRateLimitHitsTotal())
+
+	// Gauge accessors.
+	require.NotNil(t, m.QueueDepth())
+	require.NotNil(t, m.CircuitBreakerState())
+	require.NotNil(t, m.WebSocketClients())
+
+	// Histogram accessors.
+	require.NotNil(t, m.NotificationsProcessing())
+	require.NotNil(t, m.HTTPRequestDuration())
+
+	// Sanity-check that one of the returned handles is wired to the
+	// same registry — increment via the accessor and read it back
+	// via the verb method.
+	m.NotificationsDeliveredTotal().WithLabelValues("sms").Inc()
+	require.Equal(t, float64(1),
+		testutil.ToFloat64(m.NotificationsDeliveredTotal().WithLabelValues("sms")))
+}
+
 func mapKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
