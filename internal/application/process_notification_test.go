@@ -328,7 +328,7 @@ func findLogLine(t *testing.T, buf *bytes.Buffer, want string) map[string]any {
 	require.NotEmpty(t, lines, "no log output captured")
 	for _, line := range lines {
 		var entry map[string]any
-		if jerr := json.Unmarshal(line, &entry); jerr != nil {
+		if json.Unmarshal(line, &entry) != nil {
 			continue // skip non-JSON noise; the captured handler should not emit any
 		}
 		if msg, _ := entry["msg"].(string); msg == want {

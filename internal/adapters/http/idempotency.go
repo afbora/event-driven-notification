@@ -75,41 +75,69 @@ var errIdempotencyBodyTooLarge = errors.New("request body exceeds idempotency li
 func IdempotencyMiddleware(store ports.IdempotencyStore) func(nethttp.Handler) nethttp.Handler {
 	return func(next nethttp.Handler) nethttp.Handler {
 		return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-			key := r.Header.Get(idempotencyHeader)
-			if key == "" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			bodyBytes, err := readAndBufferRequestBody(r)
-			if err != nil {
-				respondToBodyReadError(w, r, err)
-				return
-			}
-			requestHash := hashRequestBody(bodyBytes)
-
-			ctx := r.Context()
-			entry, found, err := store.Get(ctx, key)
-			if err != nil {
-				slog.WarnContext(ctx, "idempotency store unavailable, allowing request",
-					"key", key,
-					"error", err.Error(),
-				)
-				runAndCache(ctx, w, r, next, store, key, requestHash)
-				return
-			}
-			if found {
-				if len(entry.RequestHash) > 0 && !bytes.Equal(entry.RequestHash, requestHash) {
-					respondWithKeyMismatch(w, r)
-					return
-				}
-				replayCachedEntry(ctx, w, key, entry)
-				return
-			}
-
-			runAndCache(ctx, w, r, next, store, key, requestHash)
+			serveIdempotent(w, r, next, store)
 		})
 	}
+}
+
+// serveIdempotent owns the per-request branching for the idempotency
+// middleware. Extracted from IdempotencyMiddleware so the cognitive
+// complexity of the public constructor (which is mostly closure
+// scaffolding) stays under Sonar's S3776 threshold — the constructor
+// returns a returned-from-a-returned func, which compounds every
+// branch's nesting penalty when measured at the top.
+func serveIdempotent(w nethttp.ResponseWriter, r *nethttp.Request, next nethttp.Handler, store ports.IdempotencyStore) {
+	key := r.Header.Get(idempotencyHeader)
+	if key == "" {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	bodyBytes, err := readAndBufferRequestBody(r)
+	if err != nil {
+		respondToBodyReadError(w, r, err)
+		return
+	}
+	requestHash := hashRequestBody(bodyBytes)
+
+	ctx := r.Context()
+	entry, found, err := store.Get(ctx, key)
+	if err != nil {
+		slog.WarnContext(ctx, "idempotency store unavailable, allowing request",
+			"key", key,
+			"error", err.Error(),
+		)
+		runAndCache(ctx, w, r, next, store, key, requestHash)
+		return
+	}
+	if found {
+		dispatchCacheHit(ctx, w, r, key, entry, requestHash)
+		return
+	}
+
+	runAndCache(ctx, w, r, next, store, key, requestHash)
+}
+
+// dispatchCacheHit branches on whether the stored entry's request
+// fingerprint matches the current request's. A mismatched fingerprint
+// is the "same key, different intent" client bug; everything else
+// (matching fingerprint or a legacy entry without a stored hash)
+// falls through to the canonical replay path.
+func dispatchCacheHit(ctx context.Context, w nethttp.ResponseWriter, r *nethttp.Request, key string, entry ports.IdempotencyEntry, requestHash []byte) {
+	if requestHashMismatched(entry.RequestHash, requestHash) {
+		respondWithKeyMismatch(w, r)
+		return
+	}
+	replayCachedEntry(ctx, w, key, entry)
+}
+
+// requestHashMismatched returns true when the stored fingerprint is
+// non-empty AND does not match the current request's. Empty stored
+// fingerprints (legacy entries written before the body-hash field
+// landed) intentionally return false so the upgrade path keeps
+// replaying them.
+func requestHashMismatched(stored, current []byte) bool {
+	return len(stored) > 0 && !bytes.Equal(stored, current)
 }
 
 // readAndBufferRequestBody drains r.Body up to the configured ceiling,
