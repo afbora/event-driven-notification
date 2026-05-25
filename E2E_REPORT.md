@@ -268,7 +268,8 @@
 - **Redis Commander** — http://localhost:8083/ → 200 healthy; `redis-cli --scan` shows `idempotency:reverify-*`, `asynq:{normal}:processed:*`, `asynq:servers:*`, `asynq:workers` keys.
 
 ### N) Hexagonal boundaries
-- No forbidden imports in `internal/domain/` or `internal/application/`: a Grep for `"database/sql"`, `"net/http"`, `hibiken/asynq`, `redis/go-redis`, `jackc/pgx` returns empty — the rule holds.
+- **Comprehensive third-party import scan** on `internal/domain/` and `internal/application/` (regex `"[^"]*\.[^"]+/[^"]+"`, excluding `*_test.go` and this module's own paths) returns **0 matches** — the rule holds for every external package, not just the historical short list (`database/sql`, `net/http`, `hibiken/asynq`, `redis/go-redis`, `jackc/pgx`).
+- The earlier shorter grep missed `go.opentelemetry.io/otel` in `process_notification.go`; surfaced by a peer code review and closed in the `fix/hexagonal-boundary-otel` branch by routing span work through a new `ports.Tracer` port with an OTel-backed adapter in `internal/infrastructure/tracing/`. The application layer now imports only stdlib + `internal/domain` + `internal/ports` + `internal/infrastructure/correlation` (project-local).
 
 ---
 
