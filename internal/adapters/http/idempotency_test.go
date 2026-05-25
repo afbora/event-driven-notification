@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	httpadapter "github.com/afbora/event-driven-notification/internal/adapters/http"
+	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
 // fakeIdempotencyStore is an in-memory ports.IdempotencyStore for the
@@ -27,7 +28,7 @@ type fakeIdempotencyStore struct {
 	// preloaded entries keyed by the raw client key (no prefix — the
 	// middleware passes the raw key; the redis adapter is the layer
 	// that applies the "idempotency:" namespace).
-	entries map[string]idempotencyEntry
+	entries map[string]ports.IdempotencyEntry
 
 	getErr error
 	setErr error
@@ -36,44 +37,38 @@ type fakeIdempotencyStore struct {
 	setCalls []setCall
 }
 
-type idempotencyEntry struct {
-	body        []byte
-	contentType string
-}
-
 type setCall struct {
-	key         string
-	body        []byte
-	contentType string
-	ttl         time.Duration
+	key   string
+	entry ports.IdempotencyEntry
+	ttl   time.Duration
 }
 
 func newFakeIdempotencyStore() *fakeIdempotencyStore {
-	return &fakeIdempotencyStore{entries: map[string]idempotencyEntry{}}
+	return &fakeIdempotencyStore{entries: map[string]ports.IdempotencyEntry{}}
 }
 
-func (f *fakeIdempotencyStore) Get(_ context.Context, key string) ([]byte, string, bool, error) {
+func (f *fakeIdempotencyStore) Get(_ context.Context, key string) (ports.IdempotencyEntry, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getCalls = append(f.getCalls, key)
 	if f.getErr != nil {
-		return nil, "", false, f.getErr
+		return ports.IdempotencyEntry{}, false, f.getErr
 	}
 	e, ok := f.entries[key]
 	if !ok {
-		return nil, "", false, nil
+		return ports.IdempotencyEntry{}, false, nil
 	}
-	return e.body, e.contentType, true, nil
+	return e, true, nil
 }
 
-func (f *fakeIdempotencyStore) Set(_ context.Context, key string, body []byte, contentType string, ttl time.Duration) error {
+func (f *fakeIdempotencyStore) Set(_ context.Context, key string, entry ports.IdempotencyEntry, ttl time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.setCalls = append(f.setCalls, setCall{key: key, body: body, contentType: contentType, ttl: ttl})
+	f.setCalls = append(f.setCalls, setCall{key: key, entry: entry, ttl: ttl})
 	if f.setErr != nil {
 		return f.setErr
 	}
-	f.entries[key] = idempotencyEntry{body: body, contentType: contentType}
+	f.entries[key] = entry
 	return nil
 }
 
@@ -125,8 +120,10 @@ func TestIdempotency_CacheMiss_CapturesAndStores2xx(t *testing.T) {
 	require.Equal(t, []string{"key-1"}, store.getCalls)
 	require.Len(t, store.setCalls, 1)
 	require.Equal(t, "key-1", store.setCalls[0].key)
-	require.Equal(t, []byte(`{"id":"abc"}`), store.setCalls[0].body)
-	require.Equal(t, "application/json", store.setCalls[0].contentType)
+	require.Equal(t, []byte(`{"id":"abc"}`), store.setCalls[0].entry.Body)
+	require.Equal(t, "application/json", store.setCalls[0].entry.ContentType)
+	require.NotEmpty(t, store.setCalls[0].entry.RequestHash,
+		"the captured entry must carry the request body hash so a future divergent payload is 409'd")
 	require.Equal(t, 24*time.Hour, store.setCalls[0].ttl)
 }
 
@@ -137,9 +134,12 @@ func TestIdempotency_CacheMiss_CapturesAndStores2xx(t *testing.T) {
 // downstream handler never runs.
 func TestIdempotency_CacheHit_ReplaysAs200_HandlerSkipped(t *testing.T) {
 	store := newFakeIdempotencyStore()
-	store.entries["dup-key"] = idempotencyEntry{
-		body:        []byte(`{"id":"cached"}`),
-		contentType: "application/json",
+	// Preloaded entry has no RequestHash — the legacy fallback path
+	// (older deployments without fingerprinting). The middleware
+	// recognizes the empty hash and replays, never 409s.
+	store.entries["dup-key"] = ports.IdempotencyEntry{
+		Body:        []byte(`{"id":"cached"}`),
+		ContentType: "application/json",
 	}
 	mw := httpadapter.IdempotencyMiddleware(store)
 
@@ -309,6 +309,63 @@ func TestIdempotency_SameKey_SameBody_StillReplays(t *testing.T) {
 	require.Equal(t, `{"id":"first"}`, rr2.Body.String(), "replay body must match first response")
 }
 
+// TestIdempotency_LegacyEntryWithoutHash_StillReplays: an entry that
+// pre-dates the body-fingerprint fix carries no RequestHash. The
+// middleware must recognize the legacy shape (len(hash)==0) and fall
+// back to the pre-fingerprint replay behavior — otherwise the upgrade
+// would 409 every in-flight cache entry written before the fix.
+func TestIdempotency_LegacyEntryWithoutHash_StillReplays(t *testing.T) {
+	store := newFakeIdempotencyStore()
+	store.entries["legacy-key"] = ports.IdempotencyEntry{
+		Body:        []byte(`{"id":"legacy"}`),
+		ContentType: "application/json",
+		// RequestHash deliberately nil.
+	}
+	mw := httpadapter.IdempotencyMiddleware(store)
+
+	called := false
+	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(nethttp.MethodPost, "/x",
+		bytes.NewReader([]byte(`{"any":"body"}`)))
+	req.Header.Set("Idempotency-Key", "legacy-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.False(t, called, "legacy replay must still short-circuit the handler")
+	require.Equal(t, nethttp.StatusOK, rr.Code, "legacy entries replay as 200, not 409")
+	require.Equal(t, `{"id":"legacy"}`, rr.Body.String())
+}
+
+// TestIdempotency_OversizedBody_Returns413: a body above the
+// fingerprint cap (1 MiB) is rejected with RFC 7807 413 before the
+// handler runs. Hashing megabytes of client-controlled input on every
+// duplicate-detection check would be a DoS amplifier.
+func TestIdempotency_OversizedBody_Returns413(t *testing.T) {
+	store := newFakeIdempotencyStore()
+	mw := httpadapter.IdempotencyMiddleware(store)
+
+	called := false
+	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
+		called = true
+	}))
+
+	// 1 MiB + 1 byte — exactly one byte past the cap.
+	oversized := bytes.Repeat([]byte{'a'}, (1<<20)+1)
+	req := httptest.NewRequest(nethttp.MethodPost, "/x", bytes.NewReader(oversized))
+	req.Header.Set("Idempotency-Key", "big-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, nethttp.StatusRequestEntityTooLarge, rr.Code,
+		"body above the cap must be 413 Payload Too Large; got %d", rr.Code)
+	require.False(t, called, "oversized body must short-circuit before the handler runs")
+	require.Equal(t, "application/problem+json", rr.Header().Get("Content-Type"))
+	require.Empty(t, store.setCalls, "no cache write on the rejection path")
+}
+
 // TestIdempotency_CapturedBodyMatchesClientView: end-to-end check that
 // the body cached on miss equals the body the client received — a
 // regression guard against the response writer wrapper accidentally
@@ -334,6 +391,6 @@ func TestIdempotency_CapturedBodyMatchesClientView(t *testing.T) {
 	require.Equal(t, payload, clientBody)
 
 	require.Len(t, store.setCalls, 1)
-	require.Equal(t, payload, store.setCalls[0].body)
-	require.Equal(t, "application/json; charset=utf-8", store.setCalls[0].contentType)
+	require.Equal(t, payload, store.setCalls[0].entry.Body)
+	require.Equal(t, "application/json; charset=utf-8", store.setCalls[0].entry.ContentType)
 }

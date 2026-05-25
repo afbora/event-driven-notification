@@ -10,10 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	redisadapter "github.com/afbora/event-driven-notification/internal/adapters/redis"
+	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
-// TestIdempotencyStore_SetAndGet: full round-trip — Set stores body and
-// content type, Get returns them both with found=true.
+// TestIdempotencyStore_SetAndGet: full round-trip — Set stores body,
+// content type, and the request hash; Get returns them all with
+// found=true.
 func TestIdempotencyStore_SetAndGet(t *testing.T) {
 	client, cleanup := setupRedis(t)
 	defer cleanup()
@@ -21,14 +23,20 @@ func TestIdempotencyStore_SetAndGet(t *testing.T) {
 	store := redisadapter.NewIdempotencyStore(client)
 	ctx := context.Background()
 
-	body := []byte(`{"id":"01940000-0000-7000-8000-000000000001","status":"accepted"}`)
-	require.NoError(t, store.Set(ctx, "key-001", body, "application/json", 1*time.Minute))
+	entry := ports.IdempotencyEntry{
+		Body:        []byte(`{"id":"01940000-0000-7000-8000-000000000001","status":"accepted"}`),
+		ContentType: "application/json",
+		RequestHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
+	}
+	require.NoError(t, store.Set(ctx, "key-001", entry, 1*time.Minute))
 
-	gotBody, gotCT, found, err := store.Get(ctx, "key-001")
+	got, found, err := store.Get(ctx, "key-001")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, body, gotBody)
-	require.Equal(t, "application/json", gotCT)
+	require.Equal(t, entry.Body, got.Body)
+	require.Equal(t, entry.ContentType, got.ContentType)
+	require.Equal(t, entry.RequestHash, got.RequestHash,
+		"request hash must survive the JSON round trip so the HTTP layer can detect key/body conflicts")
 }
 
 // TestIdempotencyStore_Get_NotFound: unknown key returns found=false and
@@ -39,11 +47,12 @@ func TestIdempotencyStore_Get_NotFound(t *testing.T) {
 
 	store := redisadapter.NewIdempotencyStore(client)
 
-	body, ct, found, err := store.Get(context.Background(), "unknown-key")
+	got, found, err := store.Get(context.Background(), "unknown-key")
 	require.NoError(t, err)
 	require.False(t, found)
-	require.Nil(t, body)
-	require.Empty(t, ct)
+	require.Nil(t, got.Body)
+	require.Empty(t, got.ContentType)
+	require.Nil(t, got.RequestHash)
 }
 
 // TestIdempotencyStore_TTLExpires: a tight TTL means the entry vanishes
@@ -55,16 +64,18 @@ func TestIdempotencyStore_TTLExpires(t *testing.T) {
 	store := redisadapter.NewIdempotencyStore(client)
 	ctx := context.Background()
 
-	require.NoError(t, store.Set(ctx, "ttl-key", []byte("x"), "text/plain", 500*time.Millisecond))
+	require.NoError(t, store.Set(ctx, "ttl-key",
+		ports.IdempotencyEntry{Body: []byte("x"), ContentType: "text/plain"},
+		500*time.Millisecond))
 
 	// Right after Set — still there.
-	_, _, found, err := store.Get(ctx, "ttl-key")
+	_, found, err := store.Get(ctx, "ttl-key")
 	require.NoError(t, err)
 	require.True(t, found)
 
 	// After TTL — gone.
 	time.Sleep(1 * time.Second)
-	_, _, found, err = store.Get(ctx, "ttl-key")
+	_, found, err = store.Get(ctx, "ttl-key")
 	require.NoError(t, err)
 	require.False(t, found, "entry should expire after TTL")
 }
@@ -78,14 +89,45 @@ func TestIdempotencyStore_KeysIsolated(t *testing.T) {
 	store := redisadapter.NewIdempotencyStore(client)
 	ctx := context.Background()
 
-	require.NoError(t, store.Set(ctx, "first", []byte("alpha"), "text/plain", time.Minute))
-	require.NoError(t, store.Set(ctx, "second", []byte("beta"), "text/plain", time.Minute))
+	require.NoError(t, store.Set(ctx, "first",
+		ports.IdempotencyEntry{Body: []byte("alpha"), ContentType: "text/plain"},
+		time.Minute))
+	require.NoError(t, store.Set(ctx, "second",
+		ports.IdempotencyEntry{Body: []byte("beta"), ContentType: "text/plain"},
+		time.Minute))
 
-	body, _, _, err := store.Get(ctx, "first")
+	got, _, err := store.Get(ctx, "first")
 	require.NoError(t, err)
-	require.Equal(t, []byte("alpha"), body)
+	require.Equal(t, []byte("alpha"), got.Body)
 
-	body, _, _, err = store.Get(ctx, "second")
+	got, _, err = store.Get(ctx, "second")
 	require.NoError(t, err)
-	require.Equal(t, []byte("beta"), body)
+	require.Equal(t, []byte("beta"), got.Body)
+}
+
+// TestIdempotencyStore_LegacyEntryWithoutHash: an entry persisted by an
+// older deployment carries no RequestHash. The store must round-trip
+// it as an empty hash so the HTTP layer can detect the legacy shape
+// and fall back to the pre-fingerprint replay behavior — the upgrade
+// path (CLAUDE.md §3.9) does not break in-flight cache entries.
+func TestIdempotencyStore_LegacyEntryWithoutHash(t *testing.T) {
+	client, cleanup := setupRedis(t)
+	defer cleanup()
+
+	store := redisadapter.NewIdempotencyStore(client)
+	ctx := context.Background()
+
+	legacy := ports.IdempotencyEntry{
+		Body:        []byte(`{"id":"legacy"}`),
+		ContentType: "application/json",
+		// RequestHash deliberately nil.
+	}
+	require.NoError(t, store.Set(ctx, "legacy-key", legacy, time.Minute))
+
+	got, found, err := store.Get(ctx, "legacy-key")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Empty(t, got.RequestHash,
+		"legacy entries (no request hash) must round-trip as empty so the HTTP layer recognizes them")
+	require.Equal(t, legacy.Body, got.Body)
 }

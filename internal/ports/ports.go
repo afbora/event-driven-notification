@@ -139,15 +139,31 @@ type Provider interface {
 
 // --- Idempotency, rate limiting, fan-out ----------------------------------
 
+// IdempotencyEntry is the round-trip shape the store persists per key
+// (CLAUDE.md §3.9). Body and ContentType replay the original response;
+// RequestHash records the SHA-256 of the original request body so a
+// later POST with the same key but a divergent payload is rejected as
+// 409 Conflict instead of silently replaying — that prevents the
+// "same key, two intents" client bug from being masked.
+//
+// RequestHash MAY be empty for entries written by older deployments
+// that did not record it; the middleware treats an empty stored hash
+// as a legacy entry and falls back to the pre-fingerprint replay
+// behavior (see internal/adapters/http/idempotency.go).
+type IdempotencyEntry struct {
+	Body        []byte
+	ContentType string
+	RequestHash []byte
+}
+
 // IdempotencyStore caches API responses keyed by the client-provided
 // Idempotency-Key header (CLAUDE.md §3.9). Redis-backed in production.
 type IdempotencyStore interface {
-	// Get returns the cached response body and Content-Type, or found=false
-	// when no entry exists.
-	Get(ctx context.Context, key string) (body []byte, contentType string, found bool, err error)
+	// Get returns the cached entry, or found=false when no entry exists.
+	Get(ctx context.Context, key string) (entry IdempotencyEntry, found bool, err error)
 
-	// Set stores the response with a caller-chosen TTL (default 24h).
-	Set(ctx context.Context, key string, body []byte, contentType string, ttl time.Duration) error
+	// Set stores the entry with a caller-chosen TTL (default 24h).
+	Set(ctx context.Context, key string, entry IdempotencyEntry, ttl time.Duration) error
 }
 
 // RateLimiter is the two-flavor limiter described in CLAUDE.md §2.6: inbound
