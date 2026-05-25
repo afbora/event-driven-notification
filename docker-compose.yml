@@ -91,6 +91,12 @@ services:
       HTTP_PORT:                   "8080"
       LOG_LEVEL:                   info
       OTEL_EXPORTER_OTLP_ENDPOINT: ""
+      # Inbound rate limit defaults made explicit so operators see the
+      # production cap without grepping config.go and so the loadtest
+      # overlay (docker-compose.loadtest.yml) can override them via
+      # the standard compose merge semantics.
+      INBOUND_RATE_LIMIT:          "60"
+      INBOUND_RATE_WINDOW:         "1m"
     ports:
       - "8080:8080"
     volumes:
@@ -115,6 +121,12 @@ services:
       LOG_LEVEL:                   info
       WORKER_CONCURRENCY:          "10"
       OTEL_EXPORTER_OTLP_ENDPOINT: ""
+      # Outbound (per-channel) rate limit defaults made explicit. The
+      # loadtest overlay does NOT raise these — the goal of
+      # tests/load/rate_limit.js is to PROVE the outbound limiter
+      # actually throttles, which needs the cap in place.
+      OUTBOUND_RATE_LIMIT:         "100"
+      OUTBOUND_RATE_WINDOW:        "1s"
     volumes:
       - .:/src
       - go-mod-cache:/go/pkg/mod

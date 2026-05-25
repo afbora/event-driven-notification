@@ -1,7 +1,10 @@
 package application_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -9,6 +12,7 @@ import (
 
 	"github.com/afbora/event-driven-notification/internal/application"
 	"github.com/afbora/event-driven-notification/internal/domain"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/correlation"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
@@ -188,6 +192,260 @@ func TestProcessNotification_RateLimited(t *testing.T) {
 
 	// Rate limiter was consulted with the channel-namespaced bucket.
 	require.Equal(t, []string{"channel:sms"}, f.rateLimiter.buckets)
+}
+
+// TestProcessNotification_LogsTerminalOutcomeWithCorrelationAndNoPII:
+// E2E_REPORT.md §D flagged that the worker emits no per-task log line,
+// so a correlation_id thread spans only the API side of a request.
+// CLAUDE.md §3.8 / §12.2 mandate structured logs at every notable
+// transition; this test pins the contract:
+//
+//	level=INFO  msg="processed notification"
+//	fields:    notification_id, channel, priority, attempts, outcome,
+//	           duration_ms, correlation_id (auto from contextHandler)
+//	never:     recipient, content  (PII — CLAUDE.md §3.5, Sonar S5145)
+//
+// Capturing through slog.Default keeps production code free of a
+// logger port — the project's logger plumbing
+// (internal/infrastructure/logger.contextHandler) attaches
+// correlation_id for any call site that uses slog.InfoContext.
+func TestProcessNotification_LogsTerminalOutcomeWithCorrelationAndNoPII(t *testing.T) {
+	logged := captureProcessLogs(t)
+
+	f := newProcessFixture(t,
+		domain.DeliveredResult("provider-id-xyz", 80*time.Millisecond),
+		true,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFLOG0", domain.StatusQueued)
+
+	const corr = "01CORRLOG0000000000000000000"
+	ctx := correlation.WithContext(context.Background(), corr)
+	err := f.uc.Execute(ctx, application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	entry := findLogLine(t, logged, "processed notification")
+	require.Equal(t, "INFO", entry["level"], "outcome line must be INFO")
+	require.Equal(t, string(n.ID), entry["notification_id"])
+	require.Equal(t, "sms", entry["channel"])
+	require.Equal(t, "normal", entry["priority"])
+	require.Equal(t, "delivered", entry["outcome"])
+	require.Equal(t, corr, entry["correlation_id"],
+		"contextHandler must propagate the correlation id from ctx")
+	require.Contains(t, entry, "duration_ms",
+		"duration_ms key must be present so dashboards can group by it (value may be 0 under a static test clock)")
+
+	// PII guard: the seeded recipient string must NEVER appear in any
+	// captured log line. Sonar S5145 (log injection / sensitive data
+	// in logs) is the framing; CLAUDE.md §3.5 the explicit rule.
+	all := logged.String()
+	require.NotContains(t, all, n.Recipient,
+		"recipient is PII and must never be logged; saw it in:\n%s", all)
+}
+
+// TestProcessNotification_LogsCorrelationFromNotificationEntity:
+// when the worker is invoked by the asynq processor (queue handoff)
+// the incoming ctx is "bare" — it does NOT carry the correlation_id
+// the API stamped on the request. The use case must derive it from
+// the notification entity (notif.CorrelationID) and inject it into
+// ctx so every downstream log line, provider call, and broadcast
+// publish carries the same id end-to-end.
+//
+// Without this, E2E_REPORT.md §D would still be partially red: the
+// worker logs come out but with no correlation_id, breaking the
+// "one ULID, end-to-end traceable" promise in CLAUDE.md §2.3.
+func TestProcessNotification_LogsCorrelationFromNotificationEntity(t *testing.T) {
+	logged := captureProcessLogs(t)
+
+	f := newProcessFixture(t,
+		domain.DeliveredResult("provider-id-zz", 70*time.Millisecond),
+		true,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFLOG3", domain.StatusQueued)
+	// seedNotificationInStatus sets CorrelationID to a known constant.
+	require.NotEmpty(t, n.CorrelationID, "fixture must seed a correlation id")
+
+	// Deliberately pass a BARE context — this mirrors the asynq
+	// processor handoff in production (the worker does not inherit
+	// the API request's ctx).
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	entry := findLogLine(t, logged, "processed notification")
+	require.Equal(t, string(n.CorrelationID), entry["correlation_id"],
+		"worker log must carry the notification's correlation id even when ctx is bare")
+}
+
+// TestProcessNotification_LogsFailedOutcome: terminal failed path must
+// emit the same outcome line, with outcome=failed and the error
+// reason attached. Guards the failure branch from silently regressing
+// when the happy-path log assertion lands.
+func TestProcessNotification_LogsFailedOutcome(t *testing.T) {
+	logged := captureProcessLogs(t)
+
+	f := newProcessFixture(t,
+		domain.PermanentFailureResult("blacklisted-recipient", 422, 50*time.Millisecond),
+		true,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFLOG1", domain.StatusQueued)
+
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	entry := findLogLine(t, logged, "processed notification")
+	require.Equal(t, "failed", entry["outcome"])
+	require.Equal(t, "blacklisted-recipient", entry["error"],
+		"failed outcome must carry the provider's reason as the error field")
+}
+
+// captureProcessLogs swaps slog.Default with a JSON handler writing
+// to an in-test buffer for the duration of the test. Returned pointer
+// is the underlying buffer — read via Bytes() / String() once the
+// use case has run. Cleanup restores the previous default.
+func captureProcessLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	// Use the project's contextHandler shape so correlation_id pulled
+	// from ctx survives the capture — wrapping a plain JSON handler is
+	// enough because contextHandler logic lives on the slog handler
+	// chain installed by infrastructure/logger.New. For this test the
+	// minimal JSON handler combined with the slog.InfoContext call
+	// site is sufficient; the production logger uses the same shape.
+	logger := slog.New(newCorrelationCapturingHandler(&buf))
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// findLogLine scans the JSON-lines buffer for the first entry whose
+// "msg" field matches want and returns it as a map. Fails the test
+// when no matching line is present — keeps assertions terse.
+func findLogLine(t *testing.T, buf *bytes.Buffer, want string) map[string]any {
+	t.Helper()
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	require.NotEmpty(t, lines, "no log output captured")
+	for _, line := range lines {
+		var entry map[string]any
+		if jerr := json.Unmarshal(line, &entry); jerr != nil {
+			continue // skip non-JSON noise; the captured handler should not emit any
+		}
+		if msg, _ := entry["msg"].(string); msg == want {
+			return entry
+		}
+	}
+	t.Fatalf("no log line with msg=%q in:\n%s", want, buf.String())
+	return nil
+}
+
+// correlationCapturingHandler is a tiny slog.Handler that mirrors the
+// project's production contextHandler behavior for the duration of a
+// test: every record gets the correlation id pulled from the calling
+// ctx attached as a top-level field, so log assertions can pin it.
+type correlationCapturingHandler struct {
+	inner slog.Handler
+}
+
+func newCorrelationCapturingHandler(buf *bytes.Buffer) *correlationCapturingHandler {
+	return &correlationCapturingHandler{
+		inner: slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}
+}
+
+func (h *correlationCapturingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h *correlationCapturingHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id := correlation.FromContext(ctx); id != "" {
+		r.AddAttrs(slog.String("correlation_id", id))
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *correlationCapturingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &correlationCapturingHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h *correlationCapturingHandler) WithGroup(name string) slog.Handler {
+	return &correlationCapturingHandler{inner: h.inner.WithGroup(name)}
+}
+
+// TestProcessNotification_RateLimited_IncrementsOutboundHitMetric:
+// when the outbound limiter denies a Send the worker must increment
+// notifications_outbound_rate_limit_hits_total tagged by channel.
+// Surfaced during live re-verification of E2E_REPORT.md §H: the
+// throttling itself works (the live load test pushed 6001 requests
+// at 200 rps and saw ~3700 land in retrying with last_error
+// "outbound rate limit exceeded"), but the counter stayed at zero
+// because production code never called the metric. This test
+// closes the observability gap.
+func TestProcessNotification_RateLimited_IncrementsOutboundHitMetric(t *testing.T) {
+	recorder := &recordingProcessMetrics{}
+	f := newProcessFixtureWithMetrics(t,
+		domain.DeliveredResult("never-used", 0),
+		false, // rate limit denies
+		recorder,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFRATE", domain.StatusQueued)
+
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"sms"}, recorder.outboundHits,
+		"the rate-limited path must increment outbound_rate_limit_hits_total tagged by channel")
+}
+
+// newProcessFixtureWithMetrics is a variant of newProcessFixture that
+// wires a caller-supplied MetricsRecorder. Kept separate so the
+// existing tests stay short — they pass nil and skip emit.
+func newProcessFixtureWithMetrics(t *testing.T, providerResult domain.DeliveryResult, rateAllowed bool, metrics application.MetricsRecorder) processFixture {
+	t.Helper()
+	repo := newFakeNotificationRepo()
+	logRepo := newFakeNotificationLogRepo()
+	provider := newFakeProvider(providerResult)
+	rateLimiter := newFakeRateLimiter(rateAllowed)
+	broadcaster := newFakeStatusBroadcaster()
+	idGen := newDefaultFakeIDs()
+	clock := newFakeClock(fixedAppNow)
+
+	uc := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        repo,
+		LogRepo:     logRepo,
+		Provider:    provider,
+		RateLimiter: rateLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       clock,
+		Metrics:     metrics,
+	})
+
+	return processFixture{
+		uc:          uc,
+		repo:        repo,
+		logRepo:     logRepo,
+		provider:    provider,
+		rateLimiter: rateLimiter,
+		broadcaster: broadcaster,
+	}
+}
+
+// recordingProcessMetrics is an in-memory MetricsRecorder for the
+// process-notification tests. Only the call lists the tests inspect
+// are populated; the other methods are kept for interface compliance.
+type recordingProcessMetrics struct {
+	outboundHits []string
+}
+
+func (r *recordingProcessMetrics) NotificationCreated(string, string)      {}
+func (r *recordingProcessMetrics) NotificationDelivered(string)            {}
+func (r *recordingProcessMetrics) NotificationFailed(string, string)       {}
+func (r *recordingProcessMetrics) NotificationAttempt(string, string)      {}
+func (r *recordingProcessMetrics) ObserveProcessing(string, time.Duration) {}
+func (r *recordingProcessMetrics) OutboundRateLimitHit(channel string) {
+	r.outboundHits = append(r.outboundHits, channel)
 }
 
 // TestProcessNotification_NotFound: missing id surfaces ErrNotFound; nothing

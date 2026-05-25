@@ -7,10 +7,24 @@ minutes to finish — run them deliberately, observe the dashboards.
 
 ## Bring the stack up first
 
+The load scenarios run against the api/worker via the loadtest
+overlay (`docker-compose.loadtest.yml`). That overlay raises the
+api's inbound rate limit from the production default of 60 req/min
+to 100 000 req/min so the inbound limiter never becomes the gate —
+otherwise the first 60 requests pass and the rest see 429, which
+hides whatever the load script is actually trying to measure. The
+*outbound* limit (100 msg/sec per channel) is **not** raised; the
+rate-limit scenario depends on it being in force.
+
 ```bash
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+  up -d
 make migrate-up           # if you haven't already
 ```
+
+Running without the overlay (`docker compose up -d` only) leaves the
+60 req/min inbound cap in place — fine for ad-hoc manual probing,
+useless for k6 scenarios.
 
 ## Run a scenario
 
@@ -31,6 +45,9 @@ docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
 
 The k6 container joins the same network as `api`, so it hits
 `http://api:8080` directly — no host-port mapping, no public exposure.
+The same overlay that defines the k6 service also raises the api's
+inbound rate limit so the scenario's request rate is not throttled
+at the edge (see the section above).
 
 ## Override the target URL
 

@@ -5,7 +5,7 @@
 // so the assertions stay readable in the script bodies.
 
 import http from 'k6/http';
-import { check } from 'k6/check';
+import { check } from 'k6';
 import { uuidv4 } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 
 // BASE_URL points at the api service. The compose runner injects

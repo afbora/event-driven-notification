@@ -133,6 +133,86 @@ func TestIdempotency_DifferentKeyDoesNotReplay(t *testing.T) {
 		"two notifications must produce two provider calls; got %d", len(h.Provider.Calls()))
 }
 
+// TestIdempotency_SameKey_DifferentBody_Returns409Conflict: the
+// Idempotency-Key contract is "same key, same intent." Reusing a key
+// with a different request body is a client bug — the API must refuse
+// the second POST with RFC 7807 409 Conflict instead of silently
+// replaying the first response (which would hide the divergent intent
+// from any audit). Bug observed in E2E_REPORT.md §C.
+func TestIdempotency_SameKey_DifferentBody_Returns409Conflict(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	h := NewHarness(ctx, t)
+
+	const key = "01HXYZIDEMPOTENCYKEY00009"
+	bodyA, err := json.Marshal(map[string]any{
+		"channel":   "sms",
+		"recipient": "+15555550022",
+		"content":   "intent-A",
+	})
+	require.NoError(t, err)
+	bodyB, err := json.Marshal(map[string]any{
+		"channel":   "email",
+		"recipient": "intent-b@example.com",
+		"content":   "intent-B",
+	})
+	require.NoError(t, err)
+
+	first := doIdempotentPost(ctx, t, h.BaseURL, key, bodyA)
+	require.Equal(t, http.StatusAccepted, first.status,
+		"first call (intent A) must succeed: body=%s", first.body)
+
+	second := doIdempotentPost(ctx, t, h.BaseURL, key, bodyB)
+	require.Equal(t, http.StatusConflict, second.status,
+		"same key + different body must be 409 Conflict; got status=%d body=%s",
+		second.status, second.body)
+
+	// RFC 7807 problem details body — application/problem+json with the
+	// required title / status fields. Type is the project-specific URI
+	// `/probs/idempotency-key-mismatch`.
+	var prob struct {
+		Type   string `json:"type"`
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	require.NoError(t, json.Unmarshal(second.body, &prob),
+		"second response must be RFC 7807 JSON: %s", second.body)
+	require.Equal(t, http.StatusConflict, prob.Status)
+	require.NotEmpty(t, prob.Title)
+	require.Contains(t, prob.Type, "idempotency",
+		"problem type should advertise the conflict cause; got %q", prob.Type)
+
+	// Only the first notification is persisted — the conflicting POST
+	// must never reach the use case.
+	listURL := h.BaseURL + "/api/v1/notifications?status=queued"
+	listReq, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+	require.NoError(t, err)
+	listResp, err := http.DefaultClient.Do(listReq)
+	require.NoError(t, err)
+	listBytes, _ := io.ReadAll(listResp.Body)
+	_ = listResp.Body.Close()
+
+	var listOut struct {
+		Items []struct {
+			Recipient string `json:"recipient"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(listBytes, &listOut))
+
+	matchesA, matchesB := 0, 0
+	for _, n := range listOut.Items {
+		switch n.Recipient {
+		case "+15555550022":
+			matchesA++
+		case "intent-b@example.com":
+			matchesB++
+		}
+	}
+	require.Equal(t, 1, matchesA, "intent A should have been persisted exactly once; got %d", matchesA)
+	require.Equal(t, 0, matchesB, "intent B must NOT have been persisted (409 rejected it); got %d", matchesB)
+}
+
 // idempotentResponse bundles the captured pieces of an HTTP response
 // the idempotency tests need to assert against. Body is read eagerly
 // so the caller can quote it in failure messages.

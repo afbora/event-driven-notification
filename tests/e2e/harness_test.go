@@ -231,7 +231,7 @@ func NewHarness(ctx context.Context, t *testing.T, opts ...HarnessOption) *Harne
 	router := httpadapter.NewRouter(httpadapter.Config{
 		Middlewares: []func(nethttp.Handler) nethttp.Handler{
 			httpadapter.CorrelationIDMiddleware(idGen),
-			httpadapter.InboundRateLimitMiddleware(inboundLimiter),
+			httpadapter.InboundRateLimitMiddleware(inboundLimiter, nil),
 			httpadapter.IdempotencyMiddleware(idempStore),
 		},
 	})

@@ -48,6 +48,14 @@ tmp/
 .DS_Store
 Thumbs.db
 
+# --- Claude Code local overrides ---
+# .claude/settings.local.json holds per-developer permission allowlists
+# (which Bash commands have been pre-approved, etc.). It is local-only —
+# never committed so a contributor's allowlist does not leak into the
+# repo. The shared .claude/ directory itself stays tracked because it
+# carries skill definitions and the project-level CLAUDE.md guidance.
+.claude/settings.local.json
+
 # --- Logs & local runtime data ---
 *.log
 logs/

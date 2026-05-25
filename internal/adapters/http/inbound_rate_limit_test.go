@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	nethttp "net/http"
 	"net/http/httptest"
@@ -49,7 +50,7 @@ func (f *fakeLimiter) lastBucket() string {
 // emits. The limiter saw exactly one Allow call.
 func TestInboundRateLimit_Allowed_PassesThrough(t *testing.T) {
 	limiter := &fakeLimiter{allowed: true}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	called := false
 	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
@@ -73,7 +74,7 @@ func TestInboundRateLimit_Allowed_PassesThrough(t *testing.T) {
 // downstream handler is not invoked.
 func TestInboundRateLimit_Denied_Returns429(t *testing.T) {
 	limiter := &fakeLimiter{allowed: false, retryAfter: 12 * time.Second}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	called := false
 	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
@@ -91,13 +92,95 @@ func TestInboundRateLimit_Denied_Returns429(t *testing.T) {
 		"retry-after must be the limiter's hint, rounded up to seconds")
 }
 
+// TestInboundRateLimit_Denied_BodyIsRFC7807ProblemDetails: CLAUDE.md
+// §3.5 / §10 mandate RFC 7807 problem responses for every error the
+// API emits, including 429. The current minimal `{"error": "..."}`
+// envelope is the gap captured in E2E_REPORT.md §H — fix it.
+//
+// Required shape:
+//
+//	Content-Type: application/problem+json
+//	body:        { "type":..., "title":..., "status": 429, "detail":... }
+//
+// The Retry-After header from the limiter must still be present —
+// problem details and retry guidance are independent contracts.
+func TestInboundRateLimit_Denied_BodyIsRFC7807ProblemDetails(t *testing.T) {
+	limiter := &fakeLimiter{allowed: false, retryAfter: 30 * time.Second}
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
+
+	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
+		t.Fatal("handler must not be invoked on a 429")
+	}))
+
+	req := httptest.NewRequest(nethttp.MethodGet, "/api/v1/notifications", nil)
+	req.RemoteAddr = "9.9.9.9:1"
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, nethttp.StatusTooManyRequests, rr.Code)
+	require.Equal(t, "application/problem+json", rr.Header().Get("Content-Type"),
+		"RFC 7807 §3 mandates application/problem+json")
+	require.Equal(t, "30", rr.Header().Get("Retry-After"),
+		"Retry-After must survive the migration to RFC 7807")
+
+	var prob httpadapter.Problem
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &prob),
+		"body must be parseable RFC 7807 Problem; got %s", rr.Body.String())
+	require.Equal(t, nethttp.StatusTooManyRequests, prob.Status,
+		"Problem.status must mirror the HTTP status")
+	require.NotEmpty(t, prob.Title, "Problem.title is required by RFC 7807")
+	require.NotEmpty(t, prob.Type, "Problem.type should advertise the cause")
+	require.Equal(t, "/api/v1/notifications", prob.Instance,
+		"Problem.instance defaults to the request URL path")
+}
+
+// TestInboundRateLimit_Denied_IncrementsHitMetric: every 429 must
+// increment inbound_rate_limit_hits_total tagged with the URL path
+// so the alerting stack (CLAUDE.md §3.8 / docs/RUNBOOK.md) can
+// attribute pressure per endpoint. A nil recorder is also legal (used
+// by the e2e harness) — that path is exercised by the other Denied
+// tests above and must not panic.
+func TestInboundRateLimit_Denied_IncrementsHitMetric(t *testing.T) {
+	limiter := &fakeLimiter{allowed: false, retryAfter: 1 * time.Second}
+	recorder := &recordingHitMetrics{}
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, recorder)
+
+	handler := mw(nethttp.HandlerFunc(func(_ nethttp.ResponseWriter, _ *nethttp.Request) {
+		t.Fatal("handler must not be invoked on a 429")
+	}))
+
+	req := httptest.NewRequest(nethttp.MethodGet, "/api/v1/notifications", nil)
+	req.RemoteAddr = "9.9.9.9:1"
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, nethttp.StatusTooManyRequests, rr.Code)
+	require.Equal(t, []string{"/api/v1/notifications"}, recorder.endpoints,
+		"the rejected request must be counted once, tagged with the URL path")
+}
+
+// recordingHitMetrics is the in-memory recorder used by the metric
+// assertion. Keeps the test fixture local to this file rather than
+// reaching into infrastructure/metrics — the middleware contract is
+// just the InboundRateLimitHit method.
+type recordingHitMetrics struct {
+	mu        sync.Mutex
+	endpoints []string
+}
+
+func (r *recordingHitMetrics) InboundRateLimitHit(endpoint string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.endpoints = append(r.endpoints, endpoint)
+}
+
 // TestInboundRateLimit_LimiterError_FailsOpen: when the backing store
 // errors out (Redis down, network blip), the middleware does not deny —
 // it logs the error and lets the request through. Availability beats
 // strict enforcement for the inbound limiter.
 func TestInboundRateLimit_LimiterError_FailsOpen(t *testing.T) {
 	limiter := &fakeLimiter{err: errors.New("redis: connection refused")}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	called := false
 	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
@@ -120,7 +203,7 @@ func TestInboundRateLimit_LimiterError_FailsOpen(t *testing.T) {
 // bucket — that is the closest ip to the client.
 func TestInboundRateLimit_ClientIP_PrefersXForwardedFor(t *testing.T) {
 	limiter := &fakeLimiter{allowed: true}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		w.WriteHeader(nethttp.StatusOK)
@@ -141,7 +224,7 @@ func TestInboundRateLimit_ClientIP_PrefersXForwardedFor(t *testing.T) {
 // middleware honors X-Real-IP before falling back to RemoteAddr.
 func TestInboundRateLimit_ClientIP_FallsBackToRealIP(t *testing.T) {
 	limiter := &fakeLimiter{allowed: true}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		w.WriteHeader(nethttp.StatusOK)
@@ -161,7 +244,7 @@ func TestInboundRateLimit_ClientIP_FallsBackToRealIP(t *testing.T) {
 // component so the bucket is a stable per-host key.
 func TestInboundRateLimit_ClientIP_StripsPortFromRemoteAddr(t *testing.T) {
 	limiter := &fakeLimiter{allowed: true}
-	mw := httpadapter.InboundRateLimitMiddleware(limiter)
+	mw := httpadapter.InboundRateLimitMiddleware(limiter, nil)
 
 	handler := mw(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		w.WriteHeader(nethttp.StatusOK)

@@ -4,6 +4,8 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"testing"
@@ -34,7 +36,12 @@ func TestInboundRateLimit_Returns429AfterCap(t *testing.T) {
 		require.NoError(t, err)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+		// Drain + close the body BEFORE any branch reads it — closing
+		// first (the previous shape) leaves resp.Body unreadable for
+		// the 429 RFC 7807 assertion below.
+		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		require.NoError(t, readErr, "failed to read response body")
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			firstThrottled = i
@@ -45,6 +52,23 @@ func TestInboundRateLimit_Returns429AfterCap(t *testing.T) {
 			seconds, perr := strconv.Atoi(retry)
 			require.NoError(t, perr, "Retry-After must be an integer; got %q", retry)
 			require.Greater(t, seconds, 0, "Retry-After must be a positive value")
+
+			// CLAUDE.md §3.5 / §10: every error response is RFC 7807
+			// problem details. The 429 path was the gap captured in
+			// E2E_REPORT.md §H — this assertion locks the fix in.
+			require.Equal(t, "application/problem+json", resp.Header.Get("Content-Type"),
+				"RFC 7807 mandates application/problem+json")
+			var prob struct {
+				Type   string `json:"type"`
+				Title  string `json:"title"`
+				Status int    `json:"status"`
+				Detail string `json:"detail"`
+			}
+			require.NoError(t, json.Unmarshal(body, &prob),
+				"429 body must be parseable RFC 7807 JSON: %s", body)
+			require.Equal(t, http.StatusTooManyRequests, prob.Status)
+			require.NotEmpty(t, prob.Title)
+			require.NotEmpty(t, prob.Type)
 			break
 		}
 		require.Equal(t, http.StatusOK, resp.StatusCode,

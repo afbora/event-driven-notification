@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/afbora/event-driven-notification/internal/domain"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/correlation"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
@@ -95,6 +97,11 @@ func NewProcessNotification(deps ProcessNotificationDeps) *ProcessNotification {
 //   - Call the provider.
 //   - Apply the DeliveryResult: delivered, failed (permanent or retries
 //     exhausted), or retrying with exponential backoff.
+//
+// Each terminal branch emits a single INFO log line via
+// logProcessingOutcome so dashboards can group by outcome and
+// duration_ms (CLAUDE.md §3.8 / §12.2). PII (recipient, content) is
+// deliberately excluded from the log fields.
 func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificationInput) error {
 	start := uc.clock.Now()
 	claimed, err := uc.repo.ClaimForProcessing(ctx, in.NotificationID, start)
@@ -103,6 +110,24 @@ func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificati
 			return nil // no-op — another worker won the claim race
 		}
 		return fmt.Errorf("claim notification %s: %w", in.NotificationID, err)
+	}
+
+	// The asynq processor hands us a bare ctx — the API's request
+	// ctx (with X-Correlation-ID stamped on it) does not survive the
+	// queue round trip. Re-derive the ctx from the notification's
+	// stored correlation id so every downstream log line, provider
+	// call, broadcast publish, and recordEvent carries the same id
+	// end-to-end (CLAUDE.md §2.3 "one ULID, end-to-end traceable").
+	//
+	// Only inject when the incoming ctx has no correlation id —
+	// preserves whatever the caller already set (e.g. in tests that
+	// drive Execute directly with a pre-stamped ctx). In production
+	// the asynq path always arrives bare, so this branch fires for
+	// every real worker invocation.
+	if correlation.FromContext(ctx) == "" {
+		if cid := string(claimed.CorrelationID); cid != "" {
+			ctx = correlation.WithContext(ctx, cid)
+		}
 	}
 
 	if err := uc.recordEvent(ctx, claimed, domain.LogEventProcessing); err != nil {
@@ -114,7 +139,7 @@ func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificati
 		return fmt.Errorf("rate limiter: %w", err)
 	}
 	if !allowed {
-		return uc.rescheduleForRateLimit(ctx, claimed)
+		return uc.rescheduleForRateLimit(ctx, claimed, start)
 	}
 
 	providerCtx, providerSpan := otel.Tracer(tracerName).Start(ctx, "provider.send",
@@ -151,11 +176,12 @@ func attemptOutcome(result domain.DeliveryResult) string {
 
 // applyResult maps the provider response onto the state machine.
 // start is when the worker first claimed the notification — used to
-// stamp the processing-duration histogram. Each terminal branch is
-// delegated to a dedicated helper so this function stays a thin
-// dispatch table.
+// stamp the processing-duration histogram and the per-task INFO log.
+// Each terminal branch is delegated to a dedicated helper so this
+// function stays a thin dispatch table.
 func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, start time.Time) error {
 	now := uc.clock.Now()
+	duration := now.Sub(start)
 
 	// Every terminal branch records a processing-duration sample so
 	// p99 / p95 dashboards capture even retries that eventually
@@ -163,23 +189,23 @@ func (uc *ProcessNotification) applyResult(ctx context.Context, n *domain.Notifi
 	// path returns earlier without a provider call.
 	defer func() {
 		if uc.metrics != nil {
-			uc.metrics.ObserveProcessing(string(n.Channel), now.Sub(start))
+			uc.metrics.ObserveProcessing(string(n.Channel), duration)
 		}
 	}()
 
 	switch {
 	case result.Success:
-		return uc.markDelivered(ctx, n, now)
+		return uc.markDelivered(ctx, n, now, duration)
 	case !result.Retryable || n.Attempts >= defaultMaxAttempts:
-		return uc.markFailed(ctx, n, result, now)
+		return uc.markFailed(ctx, n, result, now, duration)
 	default:
-		return uc.markRetrying(ctx, n, result, now)
+		return uc.markRetrying(ctx, n, result, now, duration)
 	}
 }
 
 // markDelivered finalizes a successful send: transition the entity,
 // persist, emit metrics, and append the delivered log row.
-func (uc *ProcessNotification) markDelivered(ctx context.Context, n *domain.Notification, now time.Time) error {
+func (uc *ProcessNotification) markDelivered(ctx context.Context, n *domain.Notification, now time.Time, duration time.Duration) error {
 	if err := n.MarkDelivered(now); err != nil {
 		return err
 	}
@@ -189,13 +215,17 @@ func (uc *ProcessNotification) markDelivered(ctx context.Context, n *domain.Noti
 	if uc.metrics != nil {
 		uc.metrics.NotificationDelivered(string(n.Channel))
 	}
-	return uc.recordEvent(ctx, n, domain.LogEventDelivered)
+	if err := uc.recordEvent(ctx, n, domain.LogEventDelivered); err != nil {
+		return err
+	}
+	logProcessingOutcome(ctx, n, "delivered", duration, "")
+	return nil
 }
 
 // markFailed handles terminal failure — either permanent (non-retryable
 // provider response) or retries exhausted. The failure-reason label is
 // normalized so the failed-counter never carries an empty string.
-func (uc *ProcessNotification) markFailed(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time) error {
+func (uc *ProcessNotification) markFailed(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time, duration time.Duration) error {
 	if err := n.MarkFailed(now, result.Reason); err != nil {
 		return err
 	}
@@ -209,12 +239,16 @@ func (uc *ProcessNotification) markFailed(ctx context.Context, n *domain.Notific
 		}
 		uc.metrics.NotificationFailed(string(n.Channel), reason)
 	}
-	return uc.recordEvent(ctx, n, domain.LogEventFailed)
+	if err := uc.recordEvent(ctx, n, domain.LogEventFailed); err != nil {
+		return err
+	}
+	logProcessingOutcome(ctx, n, "failed", duration, result.Reason)
+	return nil
 }
 
 // markRetrying schedules a transient failure for re-delivery. asynq
 // honors NextRetryAt; the worker re-runs Execute on the next delivery.
-func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time) error {
+func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time, duration time.Duration) error {
 	nextRetryAt := now.Add(backoffFor(n.Attempts))
 	if err := n.MarkRetrying(now, result.Reason, nextRetryAt); err != nil {
 		return err
@@ -222,13 +256,17 @@ func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notif
 	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
 		return fmt.Errorf("update status (retrying): %w", err)
 	}
-	return uc.recordEvent(ctx, n, domain.LogEventRetrying)
+	if err := uc.recordEvent(ctx, n, domain.LogEventRetrying); err != nil {
+		return err
+	}
+	logProcessingOutcome(ctx, n, "retrying", duration, result.Reason)
+	return nil
 }
 
 // rescheduleForRateLimit moves the notification into retrying with a short
 // backoff. The asynq adapter respects NextRetryAt; the next delivery will
 // re-run Execute and re-check the limiter.
-func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *domain.Notification) error {
+func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *domain.Notification, start time.Time) error {
 	now := uc.clock.Now()
 	if err := n.MarkRetrying(now, "outbound rate limit exceeded", now.Add(rateLimitBackoff)); err != nil {
 		return err
@@ -236,7 +274,45 @@ func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *do
 	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
 		return fmt.Errorf("update status (rate limited): %w", err)
 	}
-	return uc.recordEvent(ctx, n, domain.LogEventRetrying)
+	if uc.metrics != nil {
+		uc.metrics.OutboundRateLimitHit(string(n.Channel))
+	}
+	if err := uc.recordEvent(ctx, n, domain.LogEventRetrying); err != nil {
+		return err
+	}
+	logProcessingOutcome(ctx, n, "rate_limited", now.Sub(start), "outbound rate limit exceeded")
+	return nil
+}
+
+// logProcessingOutcome emits the single canonical INFO line for one
+// worker pass over a notification (CLAUDE.md §3.8 / §12.2). Fields
+// are intentionally low-cardinality so Grafana panels can group
+// without exploding the time-series count; the duration_ms field
+// mirrors the histogram in human-readable form for log searches.
+//
+// PII is deliberately excluded: recipient (phone / email / device
+// token) and content (the message body) NEVER appear in log output
+// (CLAUDE.md §3.5, Sonar S5145). The provider's reason string is
+// included on non-delivered outcomes so an operator can correlate a
+// log line with the upstream failure without opening the trace
+// endpoint.
+//
+// correlation_id is attached automatically by the project's slog
+// contextHandler (internal/infrastructure/logger) — no need to read
+// it explicitly here.
+func logProcessingOutcome(ctx context.Context, n *domain.Notification, outcome string, duration time.Duration, errReason string) {
+	attrs := []any{
+		"notification_id", string(n.ID),
+		"channel", string(n.Channel),
+		"priority", string(n.Priority),
+		"attempts", n.Attempts,
+		"outcome", outcome,
+		"duration_ms", duration.Milliseconds(),
+	}
+	if errReason != "" {
+		attrs = append(attrs, "error", errReason)
+	}
+	slog.InfoContext(ctx, "processed notification", attrs...)
 }
 
 // recordEvent writes a notification_logs row for the current status and

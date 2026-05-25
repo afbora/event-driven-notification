@@ -17,6 +17,7 @@ import (
 	wsadapter "github.com/afbora/event-driven-notification/internal/adapters/websocket"
 	"github.com/afbora/event-driven-notification/internal/domain"
 	"github.com/afbora/event-driven-notification/internal/infrastructure/metrics"
+	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
 // buildWSTestServerWithMiddleware mirrors buildWSTestServer in
@@ -60,10 +61,10 @@ func buildWSTestServerWithMiddleware(t *testing.T) (*httptest.Server, *wsadapter
 // middleware short-circuits before touching the store.
 type noopIdempotencyStore struct{}
 
-func (noopIdempotencyStore) Get(_ context.Context, _ string) (body []byte, contentType string, found bool, err error) {
-	return nil, "", false, nil
+func (noopIdempotencyStore) Get(_ context.Context, _ string) (ports.IdempotencyEntry, bool, error) {
+	return ports.IdempotencyEntry{}, false, nil
 }
-func (noopIdempotencyStore) Set(_ context.Context, _ string, _ []byte, _ string, _ time.Duration) error {
+func (noopIdempotencyStore) Set(_ context.Context, _ string, _ ports.IdempotencyEntry, _ time.Duration) error {
 	return nil
 }
 
