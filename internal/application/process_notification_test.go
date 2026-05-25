@@ -372,6 +372,82 @@ func (h *correlationCapturingHandler) WithGroup(name string) slog.Handler {
 	return &correlationCapturingHandler{inner: h.inner.WithGroup(name)}
 }
 
+// TestProcessNotification_RateLimited_IncrementsOutboundHitMetric:
+// when the outbound limiter denies a Send the worker must increment
+// notifications_outbound_rate_limit_hits_total tagged by channel.
+// Surfaced during live re-verification of E2E_REPORT.md §H: the
+// throttling itself works (the live load test pushed 6001 requests
+// at 200 rps and saw ~3700 land in retrying with last_error
+// "outbound rate limit exceeded"), but the counter stayed at zero
+// because production code never called the metric. This test
+// closes the observability gap.
+func TestProcessNotification_RateLimited_IncrementsOutboundHitMetric(t *testing.T) {
+	recorder := &recordingProcessMetrics{}
+	f := newProcessFixtureWithMetrics(t,
+		domain.DeliveredResult("never-used", 0),
+		false, // rate limit denies
+		recorder,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFRATE", domain.StatusQueued)
+
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"sms"}, recorder.outboundHits,
+		"the rate-limited path must increment outbound_rate_limit_hits_total tagged by channel")
+}
+
+// newProcessFixtureWithMetrics is a variant of newProcessFixture that
+// wires a caller-supplied MetricsRecorder. Kept separate so the
+// existing tests stay short — they pass nil and skip emit.
+func newProcessFixtureWithMetrics(t *testing.T, providerResult domain.DeliveryResult, rateAllowed bool, metrics application.MetricsRecorder) processFixture {
+	t.Helper()
+	repo := newFakeNotificationRepo()
+	logRepo := newFakeNotificationLogRepo()
+	provider := newFakeProvider(providerResult)
+	rateLimiter := newFakeRateLimiter(rateAllowed)
+	broadcaster := newFakeStatusBroadcaster()
+	idGen := newDefaultFakeIDs()
+	clock := newFakeClock(fixedAppNow)
+
+	uc := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        repo,
+		LogRepo:     logRepo,
+		Provider:    provider,
+		RateLimiter: rateLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       clock,
+		Metrics:     metrics,
+	})
+
+	return processFixture{
+		uc:          uc,
+		repo:        repo,
+		logRepo:     logRepo,
+		provider:    provider,
+		rateLimiter: rateLimiter,
+		broadcaster: broadcaster,
+	}
+}
+
+// recordingProcessMetrics is an in-memory MetricsRecorder for the
+// process-notification tests. Only the call lists the tests inspect
+// are populated; the other methods are kept for interface compliance.
+type recordingProcessMetrics struct {
+	outboundHits []string
+}
+
+func (r *recordingProcessMetrics) NotificationCreated(string, string)      {}
+func (r *recordingProcessMetrics) NotificationDelivered(string)            {}
+func (r *recordingProcessMetrics) NotificationFailed(string, string)       {}
+func (r *recordingProcessMetrics) NotificationAttempt(string, string)      {}
+func (r *recordingProcessMetrics) ObserveProcessing(string, time.Duration) {}
+func (r *recordingProcessMetrics) OutboundRateLimitHit(channel string) {
+	r.outboundHits = append(r.outboundHits, channel)
+}
+
 // TestProcessNotification_NotFound: missing id surfaces ErrNotFound; nothing
 // downstream runs.
 func TestProcessNotification_NotFound(t *testing.T) {

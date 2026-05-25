@@ -14,4 +14,9 @@ type MetricsRecorder interface {
 	NotificationFailed(channel, reason string)
 	NotificationAttempt(channel, outcome string)
 	ObserveProcessing(channel string, d time.Duration)
+	// OutboundRateLimitHit counts a single worker-side deferral when
+	// the per-channel outbound limiter rejects a Send. Counter is
+	// labeled by channel so dashboards can spot which channel is
+	// under pressure (CLAUDE.md §12.1).
+	OutboundRateLimitHit(channel string)
 }

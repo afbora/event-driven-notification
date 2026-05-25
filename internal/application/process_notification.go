@@ -274,6 +274,9 @@ func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *do
 	if err := uc.repo.UpdateStatus(ctx, n, domain.StatusProcessing); err != nil {
 		return fmt.Errorf("update status (rate limited): %w", err)
 	}
+	if uc.metrics != nil {
+		uc.metrics.OutboundRateLimitHit(string(n.Channel))
+	}
 	if err := uc.recordEvent(ctx, n, domain.LogEventRetrying); err != nil {
 		return err
 	}
