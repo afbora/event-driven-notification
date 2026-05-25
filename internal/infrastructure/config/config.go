@@ -59,7 +59,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Env:         getString("APP_ENV", "dev"),
 		LogLevel:    getString("LOG_LEVEL", "info"),
-		DatabaseURL: getString("DATABASE_URL", "postgres://notification:notification@localhost:5432/notification?sslmode=disable"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisAddr:   getString("REDIS_ADDR", "localhost:6379"),
 
 		HTTPAddr:             getString("HTTP_ADDR", ":8080"),
