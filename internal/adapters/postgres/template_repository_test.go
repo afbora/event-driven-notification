@@ -31,6 +31,45 @@ func makeIntegrationTemplate(t *testing.T, id domain.TemplateID, name string) *d
 	return tmpl
 }
 
+// TestTemplateRepository_MalformedID covers the parseTemplateIDErr call
+// sites in Create, Get, Update, and Delete — each rejects ids that do not
+// parse as a UUID before touching the database. Bundled because the
+// assertion shape is identical across methods.
+func TestTemplateRepository_MalformedID(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewTemplateRepository(pool)
+	ctx := context.Background()
+	badID := domain.TemplateID("not-a-uuid")
+
+	t.Run("Get", func(t *testing.T) {
+		_, err := repo.Get(ctx, badID)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse template id")
+	})
+
+	t.Run("Create", func(t *testing.T) {
+		tmpl := &domain.Template{ID: badID, Name: "x", Channel: domain.ChannelSMS, Body: "x"}
+		err := repo.Create(ctx, tmpl)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse template id")
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		tmpl := &domain.Template{ID: badID, Name: "x", Channel: domain.ChannelSMS, Body: "x"}
+		err := repo.Update(ctx, tmpl)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse template id")
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		err := repo.Delete(ctx, badID)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse template id")
+	})
+}
+
 // TestTemplateRepository_CreateAndGet: round-trip by id.
 func TestTemplateRepository_CreateAndGet(t *testing.T) {
 	pool, cleanup := setupPostgres(t)
