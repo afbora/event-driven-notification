@@ -151,6 +151,30 @@ func (r *NotificationRepository) Get(ctx context.Context, id domain.Notification
 // exists" without an extra COUNT query — a standard keyset-pagination
 // trick that scales without surprises.
 func (r *NotificationRepository) List(ctx context.Context, filter ports.NotificationFilter, cursor string, limit int) ([]*domain.Notification, string, error) {
+	params, err := buildListParams(filter, cursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+
+	rows, err := r.q.ListNotifications(ctx, params)
+	if err != nil {
+		return nil, "", fmt.Errorf("list notifications: %w", err)
+	}
+
+	items, err := rowsToNotifications(rows)
+	if err != nil {
+		return nil, "", err
+	}
+
+	items, nextCursor := paginate(items, limit)
+	return items, nextCursor, nil
+}
+
+// buildListParams translates the public filter + cursor pair into the
+// sqlc-generated parameter struct. The +1 row trick (RowLimit = limit+1)
+// is centralized here so the pagination helper does not have to know
+// about sqlc internals.
+func buildListParams(filter ports.NotificationFilter, cursor string, limit int) (sqlc.ListNotificationsParams, error) {
 	params := sqlc.ListNotificationsParams{
 		RowLimit: int32(limit + 1), //nolint:gosec // limit constrained by callers
 	}
@@ -158,11 +182,11 @@ func (r *NotificationRepository) List(ctx context.Context, filter ports.Notifica
 	if cursor != "" {
 		t, idStr, err := decodeCursor(cursor)
 		if err != nil {
-			return nil, "", fmt.Errorf("decode cursor: %w", err)
+			return sqlc.ListNotificationsParams{}, fmt.Errorf("decode cursor: %w", err)
 		}
 		pgID, err := parseUUID(idStr)
 		if err != nil {
-			return nil, "", fmt.Errorf("cursor id: %w", err)
+			return sqlc.ListNotificationsParams{}, fmt.Errorf("cursor id: %w", err)
 		}
 		params.CursorCreatedAt = timeToTimestamptz(t)
 		params.CursorID = pgID
@@ -179,7 +203,7 @@ func (r *NotificationRepository) List(ctx context.Context, filter ports.Notifica
 	if filter.BatchID != nil {
 		bid, err := parseUUID(string(*filter.BatchID))
 		if err != nil {
-			return nil, "", fmt.Errorf("batch_id filter: %w", err)
+			return sqlc.ListNotificationsParams{}, fmt.Errorf("batch_id filter: %w", err)
 		}
 		params.BatchID = bid
 	}
@@ -190,27 +214,19 @@ func (r *NotificationRepository) List(ctx context.Context, filter ports.Notifica
 		params.CreatedBefore = timeToTimestamptz(*filter.CreatedBefore)
 	}
 
-	rows, err := r.q.ListNotifications(ctx, params)
-	if err != nil {
-		return nil, "", fmt.Errorf("list notifications: %w", err)
-	}
+	return params, nil
+}
 
-	items := make([]*domain.Notification, 0, len(rows))
-	for _, row := range rows {
-		n, err := notificationFromRow(row)
-		if err != nil {
-			return nil, "", err
-		}
-		items = append(items, n)
+// paginate applies the keyset trick: List queries for limit+1 rows; if
+// more than limit rows came back, the limit-th row's keyset becomes the
+// next cursor and the slice is truncated to limit. An empty next cursor
+// means the caller reached the end.
+func paginate(items []*domain.Notification, limit int) ([]*domain.Notification, string) {
+	if len(items) <= limit {
+		return items, ""
 	}
-
-	var nextCursor string
-	if len(items) > limit {
-		last := items[limit-1]
-		nextCursor = encodeCursor(last.CreatedAt, string(last.ID))
-		items = items[:limit]
-	}
-	return items, nextCursor, nil
+	last := items[limit-1]
+	return items[:limit], encodeCursor(last.CreatedAt, string(last.ID))
 }
 
 // encodeCursor produces an opaque base64 token from the (created_at, id)
