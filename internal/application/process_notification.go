@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/afbora/event-driven-notification/internal/domain"
+	"github.com/afbora/event-driven-notification/internal/infrastructure/correlation"
 	"github.com/afbora/event-driven-notification/internal/ports"
 )
 
@@ -109,6 +110,24 @@ func (uc *ProcessNotification) Execute(ctx context.Context, in ProcessNotificati
 			return nil // no-op — another worker won the claim race
 		}
 		return fmt.Errorf("claim notification %s: %w", in.NotificationID, err)
+	}
+
+	// The asynq processor hands us a bare ctx — the API's request
+	// ctx (with X-Correlation-ID stamped on it) does not survive the
+	// queue round trip. Re-derive the ctx from the notification's
+	// stored correlation id so every downstream log line, provider
+	// call, broadcast publish, and recordEvent carries the same id
+	// end-to-end (CLAUDE.md §2.3 "one ULID, end-to-end traceable").
+	//
+	// Only inject when the incoming ctx has no correlation id —
+	// preserves whatever the caller already set (e.g. in tests that
+	// drive Execute directly with a pre-stamped ctx). In production
+	// the asynq path always arrives bare, so this branch fires for
+	// every real worker invocation.
+	if correlation.FromContext(ctx) == "" {
+		if cid := string(claimed.CorrelationID); cid != "" {
+			ctx = correlation.WithContext(ctx, cid)
+		}
 	}
 
 	if err := uc.recordEvent(ctx, claimed, domain.LogEventProcessing); err != nil {

@@ -242,6 +242,40 @@ func TestProcessNotification_LogsTerminalOutcomeWithCorrelationAndNoPII(t *testi
 		"recipient is PII and must never be logged; saw it in:\n%s", all)
 }
 
+// TestProcessNotification_LogsCorrelationFromNotificationEntity:
+// when the worker is invoked by the asynq processor (queue handoff)
+// the incoming ctx is "bare" — it does NOT carry the correlation_id
+// the API stamped on the request. The use case must derive it from
+// the notification entity (notif.CorrelationID) and inject it into
+// ctx so every downstream log line, provider call, and broadcast
+// publish carries the same id end-to-end.
+//
+// Without this, E2E_REPORT.md §D would still be partially red: the
+// worker logs come out but with no correlation_id, breaking the
+// "one ULID, end-to-end traceable" promise in CLAUDE.md §2.3.
+func TestProcessNotification_LogsCorrelationFromNotificationEntity(t *testing.T) {
+	logged := captureProcessLogs(t)
+
+	f := newProcessFixture(t,
+		domain.DeliveredResult("provider-id-zz", 70*time.Millisecond),
+		true,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFLOG3", domain.StatusQueued)
+	// seedNotificationInStatus sets CorrelationID to a known constant.
+	require.NotEmpty(t, n.CorrelationID, "fixture must seed a correlation id")
+
+	// Deliberately pass a BARE context — this mirrors the asynq
+	// processor handoff in production (the worker does not inherit
+	// the API request's ctx).
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	entry := findLogLine(t, logged, "processed notification")
+	require.Equal(t, string(n.CorrelationID), entry["correlation_id"],
+		"worker log must carry the notification's correlation id even when ctx is bare")
+}
+
 // TestProcessNotification_LogsFailedOutcome: terminal failed path must
 // emit the same outcome line, with outcome=failed and the error
 // reason attached. Guards the failure branch from silently regressing
