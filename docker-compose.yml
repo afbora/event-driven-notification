@@ -51,6 +51,33 @@ services:
       retries:  5
     networks: [notification-net]
 
+  # --- Database migration (one-shot) ---------------------------------------
+
+  migrate:
+    # One-shot container: runs every pending migration on startup, then exits.
+    # api, worker, and reconciler all depend on this completing successfully,
+    # so the stack is fully ready by the time `docker compose up` returns —
+    # no manual `make migrate-up` step needed (CLAUDE.md §2.7 one-command
+    # bring-up promise).
+    #
+    # golang-migrate is idempotent (tracks state in schema_migrations table)
+    # so re-running on every `docker compose up` is safe — subsequent runs
+    # exit instantly with "no change."
+    build:
+      context:    .
+      dockerfile: Dockerfile.dev
+    command: ["go", "run", "./cmd/migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://notification:notification@postgres:5432/notification?sslmode=disable
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [notification-net]
+    restart: "no"  # one-shot: do not restart after successful exit
+
   # --- Application binaries (dev image + air hot-reload) -------------------
 
   api:
@@ -73,6 +100,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
+      migrate:  { condition: service_completed_successfully }
     networks: [notification-net]
     restart: unless-stopped
 
@@ -94,6 +122,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
+      migrate:  { condition: service_completed_successfully }
     networks: [notification-net]
     restart: unless-stopped
 
@@ -115,6 +144,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
+      migrate:  { condition: service_completed_successfully }
     networks: [notification-net]
     restart: unless-stopped
 

@@ -100,19 +100,45 @@ the constitution (CLAUDE.md §1).
 git clone https://github.com/afbora/event-driven-notification.git
 cd event-driven-notification
 
-docker compose up -d
-make migrate-up        # apply database migrations
+docker compose up -d --wait   # ~30 s on first run (image build + migrations)
 
 curl -i http://localhost:8080/healthz/live
 # → 200 OK · {"status":"ok"}
 ```
 
+One command brings up Postgres, Redis, a one-shot migration runner, the
+three Go binaries (api / worker / reconciler), and the full operational
+UI stack. The `--wait` flag blocks until every service is healthy or
+the one-shot `migrate` container has exited successfully — so when the
+command returns, the API is ready to accept traffic.
+
 **No `.env` file required.** Every env var lives inline in
 `docker-compose.yml` with a working default (CLAUDE.md §2.7 / ADR-0010).
+**No `make` required either** — migrations run as a Compose service
+(see [Database migrations](#database-migrations) below).
 
 > **Port collisions:** if `5432`, `6379`, or `8080-8083` are already in
 > use locally, edit the host-side port mapping in `docker-compose.yml`
 > before bringing the stack up.
+
+### Database migrations
+
+The `migrate` service in `docker-compose.yml` runs every pending
+migration on startup, then exits. `api`, `worker`, and `reconciler` all
+declare `depends_on: migrate: condition: service_completed_successfully`,
+so the application binaries do not start until the schema is current.
+
+`golang-migrate` is idempotent (state lives in the `schema_migrations`
+table) — re-running `docker compose up` is safe; subsequent runs exit
+immediately with "no change."
+
+If you need to drive migrations manually (rollback, force a version,
+or inspect the current state):
+
+```bash
+docker compose run --rm migrate go run ./cmd/migrate down 1
+docker compose run --rm migrate go run ./cmd/migrate version
+```
 
 ---
 
