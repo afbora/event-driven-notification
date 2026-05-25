@@ -105,38 +105,55 @@ func TestNewBatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validBatchInput(t)
 			tc.mutate(t, &in)
-
-			batch, err := domain.NewBatch(in, fixedNow)
-
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if batch == nil {
-				t.Fatal("batch is nil")
-			}
-			if batch.ID != in.ID {
-				t.Errorf("batch.ID = %q, want %q", batch.ID, in.ID)
-			}
-			if !batch.CreatedAt.Equal(fixedNow) {
-				t.Errorf("CreatedAt = %v, want %v", batch.CreatedAt, fixedNow)
-			}
-			// Every notification's BatchID is auto-set to the batch's ID.
-			for i, n := range batch.Notifications {
-				if n.BatchID == nil {
-					t.Errorf("notification %d: BatchID is nil", i)
-					continue
-				}
-				if *n.BatchID != in.ID {
-					t.Errorf("notification %d: BatchID = %q, want %q", i, *n.BatchID, in.ID)
-				}
-			}
+			assertNewBatch(t, in, tc.wantErr)
 		})
+	}
+}
+
+// assertNewBatch drives NewBatch and applies the per-case assertion:
+// on a wantErr the function checks errors.Is and stops; on success it
+// validates the surfaced fields and delegates the auto-link check to
+// assertBatchIDsLinked. Splitting these out keeps TestNewBatch's body
+// at a single flow-control step and brings each function comfortably
+// below the cognitive-complexity threshold.
+func assertNewBatch(t *testing.T, in domain.NewBatchInput, wantErr error) {
+	t.Helper()
+	batch, err := domain.NewBatch(in, fixedNow)
+
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want errors.Is(_, %v)", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if batch == nil {
+		t.Fatal("batch is nil")
+	}
+	if batch.ID != in.ID {
+		t.Errorf("batch.ID = %q, want %q", batch.ID, in.ID)
+	}
+	if !batch.CreatedAt.Equal(fixedNow) {
+		t.Errorf("CreatedAt = %v, want %v", batch.CreatedAt, fixedNow)
+	}
+	assertBatchIDsLinked(t, batch.Notifications, in.ID)
+}
+
+// assertBatchIDsLinked verifies that every member notification has its
+// BatchID auto-set to the batch's ID. Each missing or wrong link is
+// reported with the offending index so a failure pinpoints the row.
+func assertBatchIDsLinked(t *testing.T, notifs []*domain.Notification, want domain.BatchID) {
+	t.Helper()
+	for i, n := range notifs {
+		if n.BatchID == nil {
+			t.Errorf("notification %d: BatchID is nil", i)
+			continue
+		}
+		if *n.BatchID != want {
+			t.Errorf("notification %d: BatchID = %q, want %q", i, *n.BatchID, want)
+		}
 	}
 }
 
