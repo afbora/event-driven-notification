@@ -297,6 +297,17 @@ func (r *NotificationRepository) FindOverdueRetrying(ctx context.Context, before
 	return rowsToNotifications(rows)
 }
 
+// FindStuckQueued is the recovery query for the dual-write race
+// captured in CLAUDE.md §3.11 — rows that ended up in queued while
+// the asynq task was already consumed by an early worker dequeue
+// (RED-phase stub; the GREEN commit replaces this body with a real
+// sqlc query against status='queued' AND updated_at < olderThan with
+// FOR UPDATE SKIP LOCKED).
+func (r *NotificationRepository) FindStuckQueued(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
+	// TODO(M1 GREEN): wire the FindStuckQueued sqlc query and return rows.
+	return nil, nil
+}
+
 // rowsToNotifications converts a slice of sqlc rows into domain entities,
 // short-circuiting on the first conversion failure.
 func rowsToNotifications(rows []sqlc.Notification) ([]*domain.Notification, error) {

@@ -38,7 +38,7 @@ func newReconcileStuck(t *testing.T) (
 // every counter zero, no log entries, no enqueues.
 func TestReconcileStuckNotifications_Nothing(t *testing.T) {
 	uc, repo, logRepo, queue := newReconcileStuck(t)
-	repo.SetReconcilerResults(nil, nil, nil)
+	repo.SetReconcilerResults(nil, nil, nil, nil)
 
 	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestReconcileStuckNotifications_Nothing(t *testing.T) {
 func TestReconcileStuckNotifications_OrphanedPending(t *testing.T) {
 	uc, repo, logRepo, queue := newReconcileStuck(t)
 	n := makeNotificationForReconciler(t, repo, "01NOTIFORPH", domain.StatusPending)
-	repo.SetReconcilerResults([]*domain.Notification{n}, nil, nil)
+	repo.SetReconcilerResults([]*domain.Notification{n}, nil, nil, nil)
 
 	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestReconcileStuckNotifications_OrphanedPending(t *testing.T) {
 func TestReconcileStuckNotifications_StuckProcessing(t *testing.T) {
 	uc, repo, logRepo, queue := newReconcileStuck(t)
 	n := makeNotificationForReconciler(t, repo, "01NOTIFSTUCK", domain.StatusProcessing)
-	repo.SetReconcilerResults(nil, []*domain.Notification{n}, nil)
+	repo.SetReconcilerResults(nil, []*domain.Notification{n}, nil, nil)
 
 	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
 	require.NoError(t, err)
@@ -93,12 +93,42 @@ func TestReconcileStuckNotifications_StuckProcessing(t *testing.T) {
 	require.Empty(t, queue.items)
 }
 
+// TestReconcileStuckNotifications_StuckQueued: closes the dual-write
+// race documented in CLAUDE.md §3.11 — when a worker dequeues a task
+// before CreateNotification has flipped the row from pending to
+// queued, the atomic claim (status IN ('queued','retrying')) is a
+// no-op, asynq consumes the task, the API then writes queued, and
+// the row sits in queued forever with no task on the queue.
+//
+// Recovery is a re-enqueue without changing status: the row is
+// already in the correct state, only the asynq task is missing. No
+// log row is written either — there is no new event, just a missed
+// delivery being recovered.
+func TestReconcileStuckNotifications_StuckQueued(t *testing.T) {
+	uc, repo, logRepo, queue := newReconcileStuck(t)
+	n := makeNotificationForReconciler(t, repo, "01NOTIFQRACE", domain.StatusQueued)
+	repo.SetReconcilerResults(nil, nil, nil, []*domain.Notification{n})
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, out.StuckQueuedReenqueued,
+		"the sweep must count the recovered row")
+	require.Equal(t, domain.StatusQueued, repo.store[n.ID].Status,
+		"stuck-queued recovery must NOT transition status — the row is already correct")
+	require.Len(t, queue.items, 1,
+		"the recovery is a single asynq re-enqueue")
+	require.Equal(t, n.ID, queue.items[0].NotificationID)
+	require.Empty(t, logRepo.entries,
+		"no log row is written: there is no new event, just a missed delivery being recovered")
+}
+
 // TestReconcileStuckNotifications_OverdueRetrying: notification in retrying
 // past NextRetryAt → re-enqueued, status unchanged (still retrying).
 func TestReconcileStuckNotifications_OverdueRetrying(t *testing.T) {
 	uc, repo, logRepo, queue := newReconcileStuck(t)
 	n := makeNotificationForReconciler(t, repo, "01NOTIFOVERD", domain.StatusRetrying)
-	repo.SetReconcilerResults(nil, nil, []*domain.Notification{n})
+	repo.SetReconcilerResults(nil, nil, []*domain.Notification{n}, nil)
 
 	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
 	require.NoError(t, err)
@@ -125,6 +155,7 @@ func TestReconcileStuckNotifications_AllThree(t *testing.T) {
 		[]*domain.Notification{orph},
 		[]*domain.Notification{stuck},
 		[]*domain.Notification{overd},
+		nil,
 	)
 
 	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})

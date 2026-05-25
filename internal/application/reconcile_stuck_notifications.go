@@ -29,6 +29,7 @@ type ReconcileStuckNotificationsOutput struct {
 	OrphanedPendingReenqueued int
 	StuckProcessingFailed     int
 	OverdueRetryingReenqueued int
+	StuckQueuedReenqueued     int
 }
 
 // ReconcileStuckNotifications is the safety-net use case (CLAUDE.md §3.11,

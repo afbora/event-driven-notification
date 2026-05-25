@@ -118,15 +118,21 @@ type fakeNotificationRepo struct {
 	orphanedPending []*domain.Notification
 	stuckProcessing []*domain.Notification
 	overdueRetrying []*domain.Notification
+	stuckQueued     []*domain.Notification
 }
 
 // SetReconcilerResults primes the next reconciliation sweep's return values.
-func (r *fakeNotificationRepo) SetReconcilerResults(orphanedPending, stuckProcessing, overdueRetrying []*domain.Notification) {
+// Slices are positional — pass nil for any sweep the test does not care
+// about. stuckQueued covers the dual-write race documented in
+// CLAUDE.md §3.11 (notification ends up in queued with no asynq task
+// waiting for it).
+func (r *fakeNotificationRepo) SetReconcilerResults(orphanedPending, stuckProcessing, overdueRetrying, stuckQueued []*domain.Notification) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.orphanedPending = orphanedPending
 	r.stuckProcessing = stuckProcessing
 	r.overdueRetrying = overdueRetrying
+	r.stuckQueued = stuckQueued
 }
 
 func newFakeNotificationRepo() *fakeNotificationRepo {
@@ -239,6 +245,12 @@ func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Tim
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return copyNotifications(r.overdueRetrying), nil
+}
+
+func (r *fakeNotificationRepo) FindStuckQueued(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return copyNotifications(r.stuckQueued), nil
 }
 
 // --- BatchRepository -----------------------------------------------------
