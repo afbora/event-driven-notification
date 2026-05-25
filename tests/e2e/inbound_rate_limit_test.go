@@ -36,7 +36,12 @@ func TestInboundRateLimit_Returns429AfterCap(t *testing.T) {
 		require.NoError(t, err)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
+		// Drain + close the body BEFORE any branch reads it — closing
+		// first (the previous shape) leaves resp.Body unreadable for
+		// the 429 RFC 7807 assertion below.
+		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		require.NoError(t, readErr, "failed to read response body")
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			firstThrottled = i
@@ -53,8 +58,6 @@ func TestInboundRateLimit_Returns429AfterCap(t *testing.T) {
 			// E2E_REPORT.md §H — this assertion locks the fix in.
 			require.Equal(t, "application/problem+json", resp.Header.Get("Content-Type"),
 				"RFC 7807 mandates application/problem+json")
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
 			var prob struct {
 				Type   string `json:"type"`
 				Title  string `json:"title"`
