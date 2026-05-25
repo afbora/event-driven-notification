@@ -54,6 +54,20 @@ func (NoopTracer) StartSpan(ctx context.Context, _ string) (context.Context, Spa
 // because callers should always reach it via NoopTracer.StartSpan.
 type noopSpan struct{}
 
-func (noopSpan) SetStringAttr(string, string) {}
-func (noopSpan) SetBoolAttr(string, bool)     {}
-func (noopSpan) End()                         {}
+// SetStringAttr is intentionally empty — noopSpan exists so call
+// sites can stamp attributes unconditionally when no tracing backend
+// is wired; there is nothing to record.
+func (noopSpan) SetStringAttr(string, string) {
+	// no-op: see type doc.
+}
+
+// SetBoolAttr is intentionally empty — see SetStringAttr.
+func (noopSpan) SetBoolAttr(string, bool) {
+	// no-op: see type doc.
+}
+
+// End is intentionally empty — noopSpan owns no resources to flush.
+// Safe to call (defer-friendly) and idempotent under repeated calls.
+func (noopSpan) End() {
+	// no-op: see type doc.
+}
