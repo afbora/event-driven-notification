@@ -25,7 +25,7 @@ func TestNewLogEvent(t *testing.T) {
 		{name: "retrying", input: "retrying", want: domain.LogEventRetrying},
 		{name: "failed", input: "failed", want: domain.LogEventFailed},
 		{name: "cancelled", input: "cancelled", want: domain.LogEventCancelled},
-		{name: "uppercase normalised", input: "CREATED", want: domain.LogEventCreated},
+		{name: "uppercase normalized", input: "CREATED", want: domain.LogEventCreated},
 		{name: "whitespace trimmed", input: "  failed  ", want: domain.LogEventFailed},
 		{name: "empty", input: "", wantErr: domain.ErrInvalidLogEvent},
 		{name: "unknown", input: "sent", wantErr: domain.ErrInvalidLogEvent},
