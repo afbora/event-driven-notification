@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -121,6 +122,44 @@ func TestReconcileStuckNotifications_StuckQueued(t *testing.T) {
 	require.Equal(t, n.ID, queue.items[0].NotificationID)
 	require.Empty(t, logRepo.entries,
 		"no log row is written: there is no new event, just a missed delivery being recovered")
+}
+
+// TestReconcileStuckNotifications_StuckQueued_RepoError: the fourth
+// sweep's repo lookup error must surface as a wrapped error from
+// Execute, not be swallowed. Pins the wrap prefix so an operator
+// reading logs can trace which sweep failed.
+func TestReconcileStuckNotifications_StuckQueued_RepoError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	repo.stuckQueuedErr = errors.New("postgres: connection refused")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "find stuck queued:",
+		"the error wrap must name the sweep so the failure is locatable in logs")
+	require.Equal(t, 0, out.StuckQueuedReenqueued,
+		"counter must stay at zero when the sweep aborts")
+	require.Empty(t, queue.items,
+		"no re-enqueue on the failure path")
+}
+
+// TestReconcileStuckNotifications_StuckQueued_HandlerError: when the
+// queue rejects the re-enqueue on a stuck-queued row, the error must
+// propagate out of Execute via handleStuckQueued's wrap. Pins both
+// the inner handler's wrap prefix and Execute's loop-abort semantics.
+func TestReconcileStuckNotifications_StuckQueued_HandlerError(t *testing.T) {
+	uc, repo, _, queue := newReconcileStuck(t)
+	n := makeNotificationForReconciler(t, repo, "01NOTIFQERR", domain.StatusQueued)
+	repo.SetReconcilerResults(nil, nil, nil, []*domain.Notification{n})
+	queue.enqErr = errors.New("asynq: redis down")
+
+	out, err := uc.Execute(context.Background(), application.ReconcileStuckNotificationsInput{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "re-enqueue stuck queued",
+		"handleStuckQueued's wrap must name the recovery path")
+	require.Contains(t, err.Error(), string(n.ID),
+		"the wrap must carry the offending notification id for log triage")
+	require.Equal(t, 0, out.StuckQueuedReenqueued,
+		"counter increments only after a successful enqueue, not before")
 }
 
 // TestReconcileStuckNotifications_OverdueRetrying: notification in retrying

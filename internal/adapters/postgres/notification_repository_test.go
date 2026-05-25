@@ -748,6 +748,26 @@ func TestFindStuckQueued_ExcludesFutureScheduled(t *testing.T) {
 	require.Equal(t, integrationNotificationID("b1"), items[0].ID)
 }
 
+// TestFindStuckQueued_DBError_WrapsError: when the underlying query
+// fails — here forced via an already-cancelled context so pgx
+// short-circuits — the adapter must wrap the error with the
+// "find stuck queued:" prefix so operators reading reconciler logs
+// can locate which sweep blew up. This pins the error-path contract
+// without needing a fault-injecting Docker network manipulation.
+func TestFindStuckQueued_DBError_WrapsError(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ensure the query observes a cancelled context
+
+	_, err := repo.FindStuckQueued(ctx, fixedIntegrationNow, 10)
+	require.Error(t, err, "cancelled context must surface as an error from pgx")
+	require.Contains(t, err.Error(), "find stuck queued:",
+		"the adapter must wrap the failure with the sweep name for log triage")
+}
+
 // TestReconcilerQueries_RespectLimit: limit caps the batch size.
 func TestReconcilerQueries_RespectLimit(t *testing.T) {
 	pool, cleanup := setupPostgres(t)

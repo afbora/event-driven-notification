@@ -119,6 +119,11 @@ type fakeNotificationRepo struct {
 	stuckProcessing []*domain.Notification
 	overdueRetrying []*domain.Notification
 	stuckQueued     []*domain.Notification
+
+	// Reconciler query errors — set per test to drive the error
+	// branches in ReconcileStuckNotifications.Execute. Each is
+	// returned verbatim from the matching Find* fake method.
+	stuckQueuedErr error
 }
 
 // SetReconcilerResults primes the next reconciliation sweep's return values.
@@ -250,6 +255,9 @@ func (r *fakeNotificationRepo) FindOverdueRetrying(_ context.Context, _ time.Tim
 func (r *fakeNotificationRepo) FindStuckQueued(_ context.Context, _ time.Time, _ int) ([]*domain.Notification, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stuckQueuedErr != nil {
+		return nil, r.stuckQueuedErr
+	}
 	return copyNotifications(r.stuckQueued), nil
 }
 
