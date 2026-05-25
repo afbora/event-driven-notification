@@ -163,11 +163,11 @@ func (uc *CreateBatch) buildNotifications(items []CreateBatchItem, correlationID
 	for i, item := range items {
 		channel, err := domain.NewChannel(item.Channel)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		priority, err := domain.NewPriority(item.Priority)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		n, err := domain.NewNotification(domain.NewNotificationInput{
 			ID:             uc.idGen.NewNotificationID(),
@@ -180,11 +180,19 @@ func (uc *CreateBatch) buildNotifications(items []CreateBatchItem, correlationID
 			TemplateID:     item.TemplateID,
 		}, now)
 		if err != nil {
-			return nil, fmt.Errorf("notification %d: %w", i, err)
+			return nil, wrapItemErr(i, err)
 		}
 		notifs = append(notifs, n)
 	}
 	return notifs, nil
+}
+
+// wrapItemErr annotates an item-level error with its position in the
+// input slice so callers can map the failure back to the request body.
+// Centralizing the format also satisfies SonarCloud S1192 (literal
+// duplication) without scattering a const across the file.
+func wrapItemErr(i int, err error) error {
+	return fmt.Errorf("notification %d: %w", i, err)
 }
 
 // recordCreated writes the initial "created" row into notification_logs.
