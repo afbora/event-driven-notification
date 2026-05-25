@@ -24,7 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check title against Conventional Commits
-        uses: amannn/action-semantic-pull-request@v5
+        # SHA-pinned to v6.1.1 (released 2025-08-22). Major bump from v5
+        # only changes minimum Node runtime; our config keys (types,
+        # subjectPattern, subjectPatternError) are unchanged.
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
