@@ -159,7 +159,10 @@ func validateContent(channel Channel, content string) error {
 // MarkQueued advances pending → queued. Returns ErrInvalidTransition if the
 // current Status does not permit it; the entity is left untouched on failure.
 func (n *Notification) MarkQueued(now time.Time) error {
-	return n.transition(StatusQueued, now, func() {})
+	return n.transition(StatusQueued, now, func() {
+		// Intentional no-op: pending → queued only flips the status
+		// and bumps UpdatedAt, both handled by transition itself.
+	})
 }
 
 // MarkProcessing advances the notification into processing. The Attempts
@@ -204,7 +207,11 @@ func (n *Notification) MarkRetrying(now time.Time, reason string, nextRetryAt ti
 // pending / queued / retrying — processing is explicitly forbidden because
 // we cannot un-send a notification once the provider call is in flight.
 func (n *Notification) Cancel(now time.Time) error {
-	return n.transition(StatusCancelled, now, func() {})
+	return n.transition(StatusCancelled, now, func() {
+		// Intentional no-op: cancellation does not touch LastError or
+		// counters. The reason a user cancels is not stored — the
+		// trace log row captures intent at the event-log layer.
+	})
 }
 
 // transition is the internal helper every Mark* method uses. It enforces the
