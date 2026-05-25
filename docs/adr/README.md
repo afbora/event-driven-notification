@@ -17,6 +17,8 @@ This directory contains the architectural decisions made for this project, in [M
 | [0009](0009-atomic-status-claim.md) | Atomic Status Claim In The Worker | Accepted |
 | [0010](0010-no-env-file.md) | No `.env` File; All Configuration Inline In docker-compose.yml | Accepted |
 | [0011](0011-reconciler-no-outbox.md) | Reconciler-Based Dual-Write Mitigation; No Outbox Pattern | Accepted |
+| [0012](0012-tracer-port.md) | Wrap OpenTelemetry Behind ports.Tracer To Keep the Application Layer Stdlib-Pure | Accepted |
+| [0013](0013-reconciler-stuck-queued-sweep.md) | Reconciler Stuck-Queued Sweep With scheduled_at Guard | Accepted |
 
 ## Adding A New ADR
 

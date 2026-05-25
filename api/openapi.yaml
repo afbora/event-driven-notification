@@ -79,6 +79,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Notification' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: |
+            The supplied `Idempotency-Key` was previously seen on this
+            endpoint with a *different* request body. The server stores
+            a SHA-256 fingerprint of the original body alongside the
+            cached response; a fingerprint mismatch surfaces as
+            `/probs/idempotency-key-mismatch` instead of silently
+            replaying the original response (which would hide the
+            second intent from any audit). Use a fresh key for the
+            new payload (CLAUDE.md §3.9).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -502,7 +516,19 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Conflict:
-      description: Conflicting state (e.g., already cancelled, FK violation).
+      description: |
+        Conflicting state — e.g., already cancelled, FK violation, or an
+        `Idempotency-Key` reused with a different request body
+        (`/probs/idempotency-key-mismatch`; see CLAUDE.md §3.9).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: |
+        Request body exceeds the idempotency cache limit (1 MiB).
+        Returned by write endpoints when the body would be too large to
+        SHA-256 fingerprint for the `Idempotency-Key` round-trip
+        (`/probs/payload-too-large`).
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

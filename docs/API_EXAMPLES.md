@@ -70,6 +70,65 @@ X-Correlation-ID: 01HXYZSAMPLECORR0001
 # → 200 OK (NOT 202) · same body, same id
 ```
 
+**Idempotency-Key conflict** (same key, *different* body within 24h):
+
+```bash
+# First POST established the cache entry for this key
+curl -X POST "$BASE/api/v1/notifications" \
+  -H 'content-type: application/json' \
+  -H 'idempotency-key: 5e9bcb15-7c61-4e8a-9fcd-1a90d2c1d111' \
+  -d '{ "channel":"sms", "recipient":"+15555550001", "content":"intent A" }'
+# → 202 Accepted
+
+# Second POST reuses the key with a different body
+curl -i -X POST "$BASE/api/v1/notifications" \
+  -H 'content-type: application/json' \
+  -H 'idempotency-key: 5e9bcb15-7c61-4e8a-9fcd-1a90d2c1d111' \
+  -d '{ "channel":"email", "recipient":"a@b.com", "content":"intent B" }'
+```
+
+Response: `409 Conflict` · `application/problem+json`
+
+```json
+{
+  "type":   "/probs/idempotency-key-mismatch",
+  "title":  "Idempotency Key Conflict",
+  "status": 409,
+  "detail": "An Idempotency-Key was reused with a different request body. Use a fresh key for the new payload.",
+  "instance": "/api/v1/notifications",
+  "correlation_id": "..."
+}
+```
+
+The server stores a SHA-256 fingerprint of the original request body
+alongside the cached response; a fingerprint mismatch surfaces as 409
+instead of silently replaying the first response (which would hide
+the second intent from any audit). Use a fresh key for the new
+payload.
+
+**Request body too large** (> 1 MiB, the idempotency-fingerprint cap):
+
+```bash
+# Body above 1 MiB — rare for notifications but the cap is defensive
+curl -i -X POST "$BASE/api/v1/notifications" \
+  -H 'content-type: application/json' \
+  -H 'idempotency-key: 5e9bcb15-7c61-4e8a-9fcd-1a90d2c1d111' \
+  --data-binary @huge-payload.json
+```
+
+Response: `413 Payload Too Large` · `application/problem+json`
+
+```json
+{
+  "type":   "/probs/payload-too-large",
+  "title":  "Payload Too Large",
+  "status": 413,
+  "detail": "Request body exceeds the 1048576-byte idempotency cache limit.",
+  "instance": "/api/v1/notifications",
+  "correlation_id": "..."
+}
+```
+
 **Validation error** (unknown channel):
 
 ```bash
@@ -355,8 +414,11 @@ Cursors are opaque base64 — clients should never inspect them.
 | `/probs/invalid-recipient`         | 400    | malformed e164 phone / RFC 5322 email                   |
 | `/probs/invalid-batch-size`        | 400    | batch has 0 or > 1000 notifications                     |
 | `/probs/not-found`                 | 404    | id does not exist                                       |
+| `/probs/idempotency-key-mismatch`  | 409    | `Idempotency-Key` reused with a different request body  |
 | `/probs/invalid-transition`        | 409    | cancel on terminal status                               |
 | `/probs/concurrent-update`         | 409    | another request mutated the row first                   |
+| `/probs/payload-too-large`         | 413    | request body > 1 MiB (idempotency-fingerprint cap)      |
+| `/probs/rate-limited`              | 429    | per-IP inbound rate limit exceeded (60 req/min default) |
 | `/probs/dependency-unavailable`    | 503    | pg or redis unreachable (readiness probe)               |
 | `/probs/internal`                  | 500    | unmapped error — operator should check logs by correlation_id |
 
