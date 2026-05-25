@@ -1,6 +1,10 @@
 package http
 
 import (
+	// embed is imported for its side effect of enabling the //go:embed
+	// directive on openapiSpecYAML below. Required by Go's compiler to
+	// recognize the //go:embed comment as a directive rather than a
+	// regular comment.
 	_ "embed"
 	nethttp "net/http"
 
