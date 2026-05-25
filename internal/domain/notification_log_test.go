@@ -158,33 +158,43 @@ func TestNewNotificationLog(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validLogInput()
 			tc.mutate(&in)
-
-			entry, err := domain.NewNotificationLog(in, fixedNow)
-
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if entry == nil {
-				t.Fatal("entry is nil")
-			}
-			if entry.ID != in.ID {
-				t.Errorf("ID = %q, want %q", entry.ID, in.ID)
-			}
-			if entry.NotificationID != in.NotificationID {
-				t.Errorf("NotificationID = %q, want %q", entry.NotificationID, in.NotificationID)
-			}
-			if entry.Event != in.Event {
-				t.Errorf("Event = %q, want %q", entry.Event, in.Event)
-			}
-			if !entry.CreatedAt.Equal(fixedNow) {
-				t.Errorf("CreatedAt = %v, want %v", entry.CreatedAt, fixedNow)
-			}
+			assertNewNotificationLog(t, in, tc.wantErr)
 		})
+	}
+}
+
+// assertNewNotificationLog drives NewNotificationLog and applies the
+// per-case assertion: on wantErr the function checks errors.Is and
+// stops; on success it validates the surfaced fields (ID,
+// NotificationID, Event) and CreatedAt parity with the injected clock.
+// Splitting the assertions out keeps TestNewNotificationLog's body at
+// a single flow-control step.
+func assertNewNotificationLog(t *testing.T, in domain.NewNotificationLogInput, wantErr error) {
+	t.Helper()
+	entry, err := domain.NewNotificationLog(in, fixedNow)
+
+	if wantErr != nil {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want errors.Is(_, %v)", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("entry is nil")
+	}
+	if entry.ID != in.ID {
+		t.Errorf("ID = %q, want %q", entry.ID, in.ID)
+	}
+	if entry.NotificationID != in.NotificationID {
+		t.Errorf("NotificationID = %q, want %q", entry.NotificationID, in.NotificationID)
+	}
+	if entry.Event != in.Event {
+		t.Errorf("Event = %q, want %q", entry.Event, in.Event)
+	}
+	if !entry.CreatedAt.Equal(fixedNow) {
+		t.Errorf("CreatedAt = %v, want %v", entry.CreatedAt, fixedNow)
 	}
 }
