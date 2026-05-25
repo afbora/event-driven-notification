@@ -100,6 +100,37 @@ func TestNotificationRepository_Get_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, ports.ErrNotFound)
 }
 
+// TestNotificationRepository_MalformedID covers the parseNotificationIDErr
+// call sites in Get, ClaimForProcessing, and UpdateStatus — each rejects
+// inputs that do not parse as a UUID before touching the database. Bundled
+// into one test because the assertion shape is identical across methods.
+func TestNotificationRepository_MalformedID(t *testing.T) {
+	pool, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	repo := postgres.NewNotificationRepository(pool)
+	badID := domain.NotificationID("not-a-uuid")
+
+	t.Run("Get", func(t *testing.T) {
+		_, err := repo.Get(context.Background(), badID)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse notification id")
+	})
+
+	t.Run("ClaimForProcessing", func(t *testing.T) {
+		_, err := repo.ClaimForProcessing(context.Background(), badID, fixedIntegrationNow)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse notification id")
+	})
+
+	t.Run("UpdateStatus", func(t *testing.T) {
+		n := &domain.Notification{ID: badID, Status: domain.StatusQueued}
+		err := repo.UpdateStatus(context.Background(), n, domain.StatusPending)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse notification id")
+	})
+}
+
 // TestNotificationRepository_Create_WithOptionalFields confirms the
 // pointer-typed columns (BatchID, ScheduledAt, TemplateID) round-trip
 // correctly when populated, not just when nil.
