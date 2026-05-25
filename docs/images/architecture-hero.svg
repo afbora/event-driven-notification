@@ -165,9 +165,10 @@
   <!-- worker ↔ redis (pub/sub) -->
   <line x1="775" y1="320" x2="700" y2="425" stroke="#dc2626" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
 
-  <!-- redis → ws clients (pub/sub fan-out, dashed back-channel) -->
-  <path d="M 565 460 Q 350 510 130 310" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
-  <text x="280" y="495" font-size="9" fill="#dc2626" font-style="italic">redis pub/sub → ws fan-out</text>
+  <!-- pub/sub fan-out: worker publishes to redis (line above), api subscribes
+       (line above), api pushes to ws clients via the response arrow above.
+       The redis box's "asynq + pub/sub fan-out" label tells the same story
+       without an extra cross-canvas curve. -->
 
   <!-- everything → observability (subtle) -->
   <line x1="870" y1="325" x2="900" y2="425" stroke="#525252" stroke-width="1" stroke-dasharray="2,3" opacity="0.6"/>
