@@ -106,6 +106,11 @@ func run() error {
 	guardedProvider := circuit.New(registry, breakerSettings("provider-registry"))
 
 	// --- application use case ------------------------------------------
+	// Tracer is wired via the dedicated port adapter so the application
+	// layer never imports go.opentelemetry.io/otel directly
+	// (CLAUDE.md §3.3). Spans remain no-ops until tracing.Setup
+	// installs a real exporter.
+	appTracer := tracing.NewTracer("github.com/afbora/event-driven-notification/internal/application")
 	processUC := application.NewProcessNotification(application.ProcessNotificationDeps{
 		Repo:        notifRepo,
 		LogRepo:     logRepo,
@@ -115,6 +120,7 @@ func run() error {
 		IDGen:       idGen,
 		Clock:       wallClock,
 		Metrics:     appMetrics,
+		Tracer:      appTracer,
 	})
 
 	// --- asynq server --------------------------------------------------

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -446,6 +447,145 @@ func (r *recordingProcessMetrics) NotificationAttempt(string, string)      {}
 func (r *recordingProcessMetrics) ObserveProcessing(string, time.Duration) {}
 func (r *recordingProcessMetrics) OutboundRateLimitHit(channel string) {
 	r.outboundHits = append(r.outboundHits, channel)
+}
+
+// TestProcessNotification_StartsProviderSendSpan: the worker must
+// open the "provider.send" span through ports.Tracer, stamp the
+// notification id + channel as initial attributes, decorate the span
+// with provider.success / provider.retryable once the call returns,
+// and End the span exactly once.
+//
+// The application layer used to call go.opentelemetry.io/otel directly
+// — CLAUDE.md §3.3 forbids third-party imports inside
+// internal/application, so the span work now flows through a port
+// (E2E_REPORT.md §N gap). This test is the contract: production code
+// MUST drive the injected ports.Tracer; without the refactor the
+// recording fake stays empty and the assertion fails.
+func TestProcessNotification_StartsProviderSendSpan(t *testing.T) {
+	tracer := newRecordingTracer()
+	f := newProcessFixtureWithTracer(t,
+		domain.DeliveredResult("provider-id-trace", 25*time.Millisecond),
+		true,
+		tracer,
+	)
+	n := seedNotificationInStatus(t, f.repo, "01NOTIFTRC0", domain.StatusQueued)
+
+	err := f.uc.Execute(context.Background(),
+		application.ProcessNotificationInput{NotificationID: n.ID})
+	require.NoError(t, err)
+
+	spans := tracer.snapshot()
+	require.Len(t, spans, 1, "exactly one span must be opened per Execute")
+
+	got := spans[0]
+	require.Equal(t, "provider.send", got.name)
+	require.True(t, got.ended, "span must be End()-ed before Execute returns")
+
+	require.Equal(t, string(n.ID), got.stringAttrs["notification.id"],
+		"notification.id must be stamped as an initial string attribute")
+	require.Equal(t, "sms", got.stringAttrs["notification.channel"],
+		"notification.channel must be stamped as an initial string attribute")
+
+	require.Equal(t, true, got.boolAttrs["provider.success"],
+		"provider.success must be stamped after the provider call returns")
+	require.Equal(t, false, got.boolAttrs["provider.retryable"],
+		"provider.retryable must be stamped after the provider call returns")
+}
+
+// newProcessFixtureWithTracer mirrors newProcessFixtureWithMetrics
+// but injects a caller-supplied Tracer instead of a MetricsRecorder.
+// Kept separate so existing tests stay short — they implicitly use
+// ports.NoopTracer.
+func newProcessFixtureWithTracer(t *testing.T, providerResult domain.DeliveryResult, rateAllowed bool, tracer ports.Tracer) processFixture {
+	t.Helper()
+	repo := newFakeNotificationRepo()
+	logRepo := newFakeNotificationLogRepo()
+	provider := newFakeProvider(providerResult)
+	rateLimiter := newFakeRateLimiter(rateAllowed)
+	broadcaster := newFakeStatusBroadcaster()
+	idGen := newDefaultFakeIDs()
+	clock := newFakeClock(fixedAppNow)
+
+	uc := application.NewProcessNotification(application.ProcessNotificationDeps{
+		Repo:        repo,
+		LogRepo:     logRepo,
+		Provider:    provider,
+		RateLimiter: rateLimiter,
+		Broadcaster: broadcaster,
+		IDGen:       idGen,
+		Clock:       clock,
+		Tracer:      tracer,
+	})
+
+	return processFixture{
+		uc:          uc,
+		repo:        repo,
+		logRepo:     logRepo,
+		provider:    provider,
+		rateLimiter: rateLimiter,
+		broadcaster: broadcaster,
+	}
+}
+
+// recordingTracer is an in-memory ports.Tracer the test uses to assert
+// span lifecycle. Every StartSpan call appends a *recordedSpan; every
+// SetXxxAttr / End mutates that span in place so the test can read
+// back what the production code stamped.
+type recordingTracer struct {
+	mu    sync.Mutex
+	spans []*recordedSpan
+}
+
+func newRecordingTracer() *recordingTracer {
+	return &recordingTracer{}
+}
+
+func (r *recordingTracer) StartSpan(ctx context.Context, name string) (context.Context, ports.Span) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := &recordedSpan{
+		name:        name,
+		stringAttrs: map[string]string{},
+		boolAttrs:   map[string]bool{},
+	}
+	r.spans = append(r.spans, s)
+	return ctx, s
+}
+
+// snapshot returns a copy of the recorded spans safe to read outside
+// the tracer's lock.
+func (r *recordingTracer) snapshot() []*recordedSpan {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*recordedSpan, len(r.spans))
+	copy(out, r.spans)
+	return out
+}
+
+type recordedSpan struct {
+	mu          sync.Mutex
+	name        string
+	stringAttrs map[string]string
+	boolAttrs   map[string]bool
+	ended       bool
+}
+
+func (s *recordedSpan) SetStringAttr(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stringAttrs[key] = value
+}
+
+func (s *recordedSpan) SetBoolAttr(key string, value bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.boolAttrs[key] = value
+}
+
+func (s *recordedSpan) End() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended = true
 }
 
 // TestProcessNotification_NotFound: missing id surfaces ErrNotFound; nothing
