@@ -160,6 +160,14 @@ live in [`CLAUDE.md` §7](./CLAUDE.md). The TDD rhythm — `test(scope)`
 commit precedes every `feat(scope)` commit — is documented in
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+A live end-to-end smoke run against the running `docker compose`
+stack — every endpoint, the queue path, the WebSocket fan-out, the
+reconciler, the observability stack, and the operational UIs — is
+captured in [`E2E_REPORT.md`](./E2E_REPORT.md) with the actual
+responses, log lines, and metric values inline as evidence. Re-run
+the same flow with `docker compose up -d` followed by the manual
+probes the report documents.
+
 ---
 
 ## Repository layout
