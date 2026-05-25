@@ -1,9 +1,12 @@
 package http
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	nethttp "net/http"
 	"time"
 
@@ -148,4 +151,27 @@ func (c *capturingWriter) Write(p []byte) (int, error) {
 	}
 	c.body.Write(p)
 	return c.ResponseWriter.Write(p)
+}
+
+// Hijack forwards to the underlying ResponseWriter's Hijack method
+// when it implements http.Hijacker. The idempotency middleware
+// short-circuits on missing Idempotency-Key header, but for safety
+// any request that does flow through capturingWriter must still be
+// upgradable to a WebSocket (or chunked transfer) — the embedded
+// ResponseWriter interface does not promote Hijack to the wrapper.
+func (c *capturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := c.ResponseWriter.(nethttp.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
+
+// Flush forwards to the underlying ResponseWriter's Flush method when
+// it implements http.Flusher. Required for streaming response bodies
+// (server-sent events, chunked transfer).
+func (c *capturingWriter) Flush() {
+	if f, ok := c.ResponseWriter.(nethttp.Flusher); ok {
+		f.Flush()
+	}
 }

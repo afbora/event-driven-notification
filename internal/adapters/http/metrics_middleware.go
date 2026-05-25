@@ -1,6 +1,9 @@
 package http
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	nethttp "net/http"
 	"strconv"
 	"time"
@@ -69,4 +72,27 @@ func (s *statusTracker) Write(p []byte) (int, error) {
 		s.wroteHeader = true
 	}
 	return s.ResponseWriter.Write(p)
+}
+
+// Hijack forwards to the underlying ResponseWriter's Hijack method
+// when it implements http.Hijacker. Required for WebSocket upgrades:
+// coder/websocket does a type assertion w.(http.Hijacker) during
+// Accept, and without explicit Hijack on the wrapper the assertion
+// fails (embedded interface methods are not promoted in Go).
+func (s *statusTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(nethttp.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
+
+// Flush forwards to the underlying ResponseWriter's Flush method when
+// it implements http.Flusher. Required for streaming response bodies
+// (server-sent events, chunked transfer); without it intermediaries
+// like the metrics middleware silently break those workloads.
+func (s *statusTracker) Flush() {
+	if f, ok := s.ResponseWriter.(nethttp.Flusher); ok {
+		f.Flush()
+	}
 }
