@@ -1,12 +1,18 @@
 # .github/workflows/ci.yml — backend CI pipeline.
 #
-# Three independent jobs that must all pass before a PR can merge:
-#   - lint        : golangci-lint v2 across the whole module
-#   - test-unit   : go test -race ./...
-#   - build       : compile every cmd/* binary on Linux
+# Jobs (all must pass before merge):
+#   - lint              : golangci-lint v2 across the whole module
+#   - vuln              : govulncheck for known CVEs (Go's `composer audit`)
+#   - test-unit         : go test -race ./... + unit coverage profile
+#   - test-integration  : go test -tags=integration (postgres + redis via testcontainers)
+#   - test-e2e          : go test -tags=e2e (full stack via testcontainers)
+#   - build             : compile every cmd/* binary
+#   - docker-build      : `docker build .` smoke test (catches Dockerfile regressions)
+#   - sonarcloud        : aggregate coverage profiles, upload to SonarCloud
 #
-# Integration / e2e jobs and the SonarCloud upload land in phase 7 once those
-# test suites exist (PLAN.md tasks 7-1 through 7-6).
+# Layout note: integration + e2e tests use testcontainers-go, which spins
+# up its own containers. The ubuntu-latest runner ships with Docker pre-
+# installed, so no `services:` block is needed.
 
 name: CI
 
@@ -31,24 +37,18 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          # Phase 1 has no external dependencies, so no `go.sum` exists yet.
-          # setup-go's cache key is built from go.sum; without it the action
-          # emits a `Restore cache failed` warning on every run. We flip this
-          # back to `true` in phase 2, once testify pulls go.sum into being.
-          cache: false
+          cache: true
 
       - name: Run golangci-lint
-        # @v9 is the current major; @v6 and earlier ship a golangci-lint v1
-        # binary by default, which cannot parse our v2 config schema
-        # (`version: "2"`, `linters.default`, `formatters`, etc.).
-        # @v7+ supports v2 only; `version:` must be explicit.
+        # @v9 ships golangci-lint v2 binaries (v2.x); the project's
+        # .golangci.yml uses the v2 schema (`version: "2"`).
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12
           args: --timeout=5m
 
-  test-unit:
-    name: Unit tests (race detector)
+  vuln:
+    name: govulncheck
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -58,10 +58,89 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Scan
+        run: govulncheck ./...
+
+  test-unit:
+    name: Unit tests (race + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Run tests
-        run: go test -race ./...
+        run: |
+          mkdir -p coverage
+          go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage/unit.out ./...
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage/unit.out
+          retention-days: 7
+
+  test-integration:
+    name: Integration tests (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run integration tests
+        run: |
+          mkdir -p coverage
+          go test -tags=integration -covermode=atomic -coverpkg=./... -coverprofile=coverage/integration.out ./internal/adapters/...
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage/integration.out
+          retention-days: 7
+
+  test-e2e:
+    name: End-to-end tests (testcontainers full stack)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run e2e tests
+        run: |
+          mkdir -p coverage
+          go test -tags=e2e -covermode=atomic -coverpkg=./... -coverprofile=coverage/e2e.out -timeout=15m ./tests/e2e/...
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-e2e
+          path: coverage/e2e.out
+          retention-days: 7
 
   build:
     name: Build all binaries
@@ -74,9 +153,57 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false  # see lint job: re-enabled once go.sum exists (phase 2)
+          cache: true
 
       - name: Compile cmd/*
-        # `./cmd/...` compiles every main package under cmd/ without dropping
-        # binaries on disk — the goal here is a clean compile, not an artefact.
         run: go build -trimpath ./cmd/...
+
+  docker-build:
+    name: Docker image build (smoke test)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        # The Dockerfile is multi-stage (builder → distroless runtime).
+        # We do NOT push the image — pure compile smoke test that catches
+        # Dockerfile regressions local `make build` cannot.
+        run: docker build --target runtime -t notification-system:ci .
+
+  sonarcloud:
+    name: SonarCloud upload
+    runs-on: ubuntu-latest
+    needs: [test-unit, test-integration, test-e2e]
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # SonarCloud needs full history for blame-driven new-code analysis.
+          fetch-depth: 0
+
+      - name: Download unit coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage
+
+      - name: Download integration coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage
+
+      - name: Download e2e coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-e2e
+          path: coverage
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN:  ${{ secrets.SONAR_TOKEN }}
