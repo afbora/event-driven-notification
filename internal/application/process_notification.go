@@ -52,14 +52,15 @@ type ProcessNotification struct {
 	idGen       ports.IDGenerator
 	clock       ports.Clock
 	metrics     MetricsRecorder
+	tracer      ports.Tracer
 }
 
-// ProcessNotificationDeps bundles the eight ports that ProcessNotification
+// ProcessNotificationDeps bundles the nine ports that ProcessNotification
 // composes. Bundling keeps NewProcessNotification's signature within
 // SonarCloud's parameter-count limit (S107) and makes the wiring code at
 // every call site self-documenting via field names rather than positional
-// order. Metrics is optional — tests pass a zero MetricsRecorder (nil)
-// to skip emission.
+// order. Metrics and Tracer are optional — tests pass nil (or a recording
+// fake) and the use case substitutes a no-op.
 type ProcessNotificationDeps struct {
 	Repo        ports.NotificationRepository
 	LogRepo     ports.NotificationLogRepository
@@ -69,11 +70,18 @@ type ProcessNotificationDeps struct {
 	IDGen       ports.IDGenerator
 	Clock       ports.Clock
 	Metrics     MetricsRecorder
+	Tracer      ports.Tracer
 }
 
 // NewProcessNotification wires the dependencies. Every port in deps is
-// required except Metrics — tests pass nil to skip emit.
+// required except Metrics and Tracer — nil Metrics skips emit; nil
+// Tracer is replaced with ports.NoopTracer so call sites never have to
+// nil-guard span starts.
 func NewProcessNotification(deps ProcessNotificationDeps) *ProcessNotification {
+	tracer := deps.Tracer
+	if tracer == nil {
+		tracer = ports.NoopTracer{}
+	}
 	return &ProcessNotification{
 		repo:        deps.Repo,
 		logRepo:     deps.LogRepo,
@@ -83,6 +91,7 @@ func NewProcessNotification(deps ProcessNotificationDeps) *ProcessNotification {
 		idGen:       deps.IDGen,
 		clock:       deps.Clock,
 		metrics:     deps.Metrics,
+		tracer:      tracer,
 	}
 }
 
