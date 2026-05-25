@@ -375,8 +375,11 @@ func (q *fakeQueue) Cancel(_ context.Context, id domain.NotificationID) error {
 // --- TemplateRepository --------------------------------------------------
 
 type fakeTemplateRepo struct {
-	mu    sync.Mutex
-	store map[domain.TemplateID]*domain.Template
+	mu        sync.Mutex
+	store     map[domain.TemplateID]*domain.Template
+	createErr error // optional injection
+	listErr   error // optional injection
+	updateErr error // optional injection
 }
 
 func newFakeTemplateRepo() *fakeTemplateRepo {
@@ -386,6 +389,9 @@ func newFakeTemplateRepo() *fakeTemplateRepo {
 func (r *fakeTemplateRepo) Create(_ context.Context, t *domain.Template) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.createErr != nil {
+		return r.createErr
+	}
 	r.store[t.ID] = t
 	return nil
 }
@@ -416,6 +422,9 @@ func (r *fakeTemplateRepo) GetByName(_ context.Context, name string) (*domain.Te
 func (r *fakeTemplateRepo) List(_ context.Context, _ int) ([]*domain.Template, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
 	out := make([]*domain.Template, 0, len(r.store))
 	for _, t := range r.store {
 		copied := *t
@@ -427,6 +436,9 @@ func (r *fakeTemplateRepo) List(_ context.Context, _ int) ([]*domain.Template, e
 func (r *fakeTemplateRepo) Update(_ context.Context, t *domain.Template) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	if _, ok := r.store[t.ID]; !ok {
 		return ports.ErrNotFound
 	}
