@@ -406,7 +406,8 @@ func TestProcessNotification_RateLimited_IncrementsOutboundHitMetric(t *testing.
 
 	err := f.uc.Execute(context.Background(),
 		application.ProcessNotificationInput{NotificationID: n.ID})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, application.ErrOutboundRateLimited,
+		"asynq-native retry contract — rate-limited path returns the sentinel so RetryDelayFunc can route the timing")
 
 	require.Equal(t, []string{"sms"}, recorder.outboundHits,
 		"the rate-limited path must increment outbound_rate_limit_hits_total tagged by channel")

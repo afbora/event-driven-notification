@@ -124,6 +124,13 @@ func run() error {
 	})
 
 	// --- asynq server --------------------------------------------------
+	// RetryDelayFunc routes asynq's native retry by the typed sentinel
+	// the use case returns (ADR-0015). ErrOutboundRateLimited picks the
+	// short rate-limit backoff so the throttled task re-fires quickly
+	// once the window rolls forward; ErrProviderTransient (and any
+	// other non-sentinel error from the use case, e.g. an infra
+	// error during the claim path) picks the exponential schedule
+	// matching the application's backoffFor function.
 	srv := hibikenasynq.NewServer(
 		hibikenasynq.RedisClientOpt{Addr: cfg.RedisAddr},
 		hibikenasynq.Config{
@@ -133,6 +140,7 @@ func run() error {
 				string(domain.PriorityNormal): 3,
 				string(domain.PriorityLow):    1,
 			},
+			RetryDelayFunc: retryDelay,
 		},
 	)
 	processor := asynqadapter.NewProcessor(processUC.Execute)
@@ -187,6 +195,16 @@ func run() error {
 	srv.Shutdown()
 	slog.Info("worker stopped cleanly")
 	return nil
+}
+
+// retryDelay is the asynq.RetryDelayFunc shim that delegates to the
+// application package's RetryDelayFor. Asynq calls this when a task's
+// handler returns a non-nil error; the application package owns the
+// actual policy so the routing keys (typed sentinels) and the timing
+// (exponential / rate-limit) live together. n is 1-indexed by asynq
+// (the count of the attempt that just failed).
+func retryDelay(n int, err error, _ *hibikenasynq.Task) time.Duration {
+	return application.RetryDelayFor(n, err)
 }
 
 // buildProvider chooses between webhook and mock per channel. Each

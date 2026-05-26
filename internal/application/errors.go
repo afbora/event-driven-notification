@@ -1,6 +1,9 @@
 package application
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Application-level sentinel errors. ProcessNotification returns these
 // from its terminal helpers so the asynq processor — and through it
@@ -24,3 +27,26 @@ var (
 	// exponential schedule transient failures use.
 	ErrOutboundRateLimited = errors.New("outbound rate limit exceeded")
 )
+
+// RetryDelayFor returns how long asynq should wait before re-running
+// a failed task, given the attempt count (1-indexed — the attempt
+// that just failed) and the error the use case returned. It is the
+// single API the worker's asynq.Config.RetryDelayFunc calls — every
+// retry-timing policy lives here so it stays beside the sentinels
+// the policy keys on.
+//
+// Mapping:
+//
+//   - errors.Is(err, ErrOutboundRateLimited) → rateLimitBackoff (1s)
+//     The throttled task should re-fire quickly so it can re-check
+//     the limiter when the window rolls forward.
+//   - everything else                        → backoffFor(attempts)
+//     Exponential schedule from CLAUDE.md §5 (30s, 60s, 120s, ...).
+//     Covers ErrProviderTransient plus any unwrapped infrastructure
+//     error from the claim / DB / rate-limiter calls.
+func RetryDelayFor(attempts int, err error) time.Duration {
+	if errors.Is(err, ErrOutboundRateLimited) {
+		return rateLimitBackoff
+	}
+	return backoffFor(attempts)
+}
