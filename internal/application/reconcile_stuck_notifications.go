@@ -15,7 +15,18 @@ import (
 const (
 	orphanedPendingThreshold = 5 * time.Minute
 	stuckProcessingThreshold = 5 * time.Minute
-	overdueRetryingThreshold = 1 * time.Minute
+
+	// overdueRetryingThreshold widened from 1 min to 10 min in the
+	// asynq-native retry shift (ADR-0015). Asynq is now the primary
+	// retry authority — markRetrying returns a typed sentinel error
+	// and the worker's RetryDelayFunc schedules the next attempt
+	// directly. A retrying row whose next_retry_at falls just behind
+	// the wall clock is almost always a live asynq schedule in
+	// progress; re-enqueuing it would double-fire. The reconciler is
+	// the safety net for the rare cases where asynq itself loses the
+	// schedule (Redis flush, scheduler crash), so its threshold sits
+	// well past any realistic retry latency.
+	overdueRetryingThreshold = 10 * time.Minute
 
 	// stuckQueuedThreshold catches the dual-write race documented in
 	// CLAUDE.md §3.11: a notification ends up in queued with no asynq

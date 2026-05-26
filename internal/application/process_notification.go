@@ -241,8 +241,14 @@ func (uc *ProcessNotification) markFailed(ctx context.Context, n *domain.Notific
 	return nil
 }
 
-// markRetrying schedules a transient failure for re-delivery. asynq
-// honors NextRetryAt; the worker re-runs Execute on the next delivery.
+// markRetrying schedules a transient failure for re-delivery. The
+// status + log + duration side effects run inline; the final return
+// is the typed ErrProviderTransient sentinel so the asynq processor
+// surfaces a non-nil error to asynq, which then schedules a retry
+// via the server's RetryDelayFunc (cmd/worker maps the sentinel to
+// the exponential backoff). NextRetryAt is still written to the row
+// as a hint for the reconciler's safety-net sweep (CLAUDE.md §3.11)
+// — it covers the rare case where asynq itself loses the schedule.
 func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notification, result domain.DeliveryResult, now time.Time, duration time.Duration) error {
 	nextRetryAt := now.Add(backoffFor(n.Attempts))
 	if err := n.MarkRetrying(now, result.Reason, nextRetryAt); err != nil {
@@ -255,12 +261,16 @@ func (uc *ProcessNotification) markRetrying(ctx context.Context, n *domain.Notif
 		return err
 	}
 	logProcessingOutcome(ctx, n, "retrying", duration, result.Reason)
-	return nil
+	return fmt.Errorf("transient failure on %s: %w", n.ID, ErrProviderTransient)
 }
 
-// rescheduleForRateLimit moves the notification into retrying with a short
-// backoff. The asynq adapter respects NextRetryAt; the next delivery will
-// re-run Execute and re-check the limiter.
+// rescheduleForRateLimit moves the notification into retrying with a
+// short backoff. The status + log + metric side effects run inline;
+// the final return is the typed ErrOutboundRateLimited sentinel so
+// the asynq processor surfaces a non-nil error and the worker's
+// RetryDelayFunc applies the rate-limit backoff (~1s) rather than
+// the exponential transient schedule. Same reconciler safety-net
+// note as markRetrying.
 func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *domain.Notification, start time.Time) error {
 	now := uc.clock.Now()
 	if err := n.MarkRetrying(now, "outbound rate limit exceeded", now.Add(rateLimitBackoff)); err != nil {
@@ -276,7 +286,7 @@ func (uc *ProcessNotification) rescheduleForRateLimit(ctx context.Context, n *do
 		return err
 	}
 	logProcessingOutcome(ctx, n, "rate_limited", now.Sub(start), "outbound rate limit exceeded")
-	return nil
+	return fmt.Errorf("rate limited on channel %s for %s: %w", n.Channel, n.ID, ErrOutboundRateLimited)
 }
 
 // logProcessingOutcome emits the single canonical INFO line for one

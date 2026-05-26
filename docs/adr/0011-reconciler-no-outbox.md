@@ -1,6 +1,6 @@
 # ADR-0011: Reconciler-Based Dual-Write Mitigation; No Outbox Pattern
 
-**Status:** Accepted
+**Status:** Accepted — **the retry-authority implication is superseded in part by [ADR-0015](0015-asynq-native-retry.md)** (asynq is now the primary retry mechanism; the reconciler's retrying sweep is a safety net only). The dual-write rationale and the `pending` / `processing` / `queued` sweeps in this ADR are unchanged.
 **Date:** 2026-05-23
 **Deciders:** Ahmet Bora
 
