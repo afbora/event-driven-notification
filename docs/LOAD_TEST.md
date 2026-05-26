@@ -35,7 +35,13 @@ scenario isolates one of those claims:
   no public exposure.
 - **Provider:** the dev compose ships `MockProvider` with 0 latency
   (CLAUDE.md §2.4). Real provider numbers will differ — see
-  *Limitations* below.
+  *Limitations* below. The MockProvider's success rate and failure
+  mode are tunable via `MOCK_PROVIDER_SUCCESS_RATE` /
+  `MOCK_PROVIDER_FAILURE_MODE` and are exposed in
+  `docker-compose.yml` for visibility; the loadtest scenarios use the
+  default (always succeed). To exercise the retry or circuit-breaker
+  paths under load, layer `docker-compose.failtest.yml` (see the
+  Testing section of the top-level `README.md`).
 - **Migrations:** the database is migrated to head before every run
   (`make migrate-up`). Notifications from earlier runs are NOT
   cleared between scenarios — for clean numbers, restart compose.
