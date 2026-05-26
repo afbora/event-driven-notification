@@ -103,7 +103,7 @@ func run() error {
 	// the circuit and short-circuits subsequent calls (CLAUDE.md §3.x,
 	// ADR-0008). gobreaker's defaults are fine for this assessment;
 	// thresholds become an ADR later if traffic grows.
-	guardedProvider := circuit.New(registry, breakerSettings("provider-registry"))
+	guardedProvider := circuit.New(registry, breakerSettings("provider-registry", appMetrics))
 
 	// --- application use case ------------------------------------------
 	// Tracer is wired via the dedicated port adapter so the application
@@ -244,9 +244,36 @@ func mockFailureMode(mode string) provideradapter.FailureMode {
 // breakerSettings returns the gobreaker settings the worker uses for
 // every provider. Modest thresholds because a production tuning
 // requires real-world data — phase 5/6 may pull these into config.
-func breakerSettings(name string) gobreaker.Settings {
+//
+// OnStateChange is wired so transitions land on the
+// notifications_circuit_breaker_state gauge (0=closed, 1=open,
+// 2=half-open). m may be nil — the callback short-circuits and the
+// gauge stays unobserved, matching the previous behavior on bare
+// Settings construction.
+func breakerSettings(name string, m *metrics.Metrics) gobreaker.Settings {
 	return gobreaker.Settings{
 		Name:        name,
 		MaxRequests: 1,
+		OnStateChange: func(stateName string, _, to gobreaker.State) {
+			if m == nil {
+				return
+			}
+			m.SetCircuitBreakerState(stateName, breakerStateToMetric(to))
+		},
+	}
+}
+
+// breakerStateToMetric maps gobreaker's State enum to the typed
+// metrics.CircuitBreakerState the gauge expects. The mapping is
+// fixed by ADR conventions (0=closed, 1=open, 2=half-open) so
+// Grafana panels can pivot on numeric thresholds.
+func breakerStateToMetric(s gobreaker.State) metrics.CircuitBreakerState {
+	switch s {
+	case gobreaker.StateOpen:
+		return metrics.CircuitOpen
+	case gobreaker.StateHalfOpen:
+		return metrics.CircuitHalfOpen
+	default:
+		return metrics.CircuitClosed
 	}
 }
