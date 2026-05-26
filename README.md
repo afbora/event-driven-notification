@@ -511,22 +511,27 @@ Headline numbers (reference hardware: 8-perf-core x86, 16 GB):
 
 ## Design decisions
 
-Eleven ADRs in [`docs/adr/`](./docs/adr/) document the load-bearing
-choices made before the first line of business code:
+Fifteen ADRs in [`docs/adr/`](./docs/adr/) document the load-bearing
+choices — most made before the first line of business code, the
+last four added during the case-review follow-up pass:
 
-| ADR    | Decision                                                       |
-|--------|----------------------------------------------------------------|
-| 0001   | Hexagonal architecture (ports & adapters)                      |
-| 0002   | `sqlc` for type-safe SQL — no ORM                              |
-| 0003   | `asynq` as the queue (priority + retry + unique + rate limit) |
-| 0004   | Strategy pattern for providers (Registry routes by channel)   |
-| 0005   | No bespoke dashboard — operational UIs already exist          |
-| 0006   | `coder/websocket` for the WebSocket adapter                    |
-| 0007   | Circuit breaker thresholds                                     |
-| 0008   | Idempotency at two layers (Redis header cache + DB unique key)|
-| 0009   | Atomic claim pattern in the worker (CLAUDE.md §3.10)          |
-| 0010   | No `.env` file — config inline in `docker-compose.yml`         |
-| 0011   | Reconciler safety net instead of an outbox pattern             |
+| ADR    | Decision                                                                 |
+|--------|--------------------------------------------------------------------------|
+| 0001   | Hexagonal architecture (ports & adapters)                                |
+| 0002   | `sqlc` for type-safe SQL — no ORM                                        |
+| 0003   | Redis + `asynq` as the async queue                                       |
+| 0004   | Strategy pattern for providers (Registry routes by channel)              |
+| 0005   | No bespoke dashboard — operational UIs already exist                     |
+| 0006   | `coder/websocket` for real-time status updates                           |
+| 0007   | "Failure Handling" interpreted as end-to-end failure response            |
+| 0008   | Three binaries (api, worker, reconciler) packaged in one image           |
+| 0009   | Atomic status claim pattern in the worker (CLAUDE.md §3.10)              |
+| 0010   | No `.env` file — config inline in `docker-compose.yml`                    |
+| 0011   | Reconciler safety net instead of an outbox pattern                       |
+| 0012   | Wrap OpenTelemetry behind `ports.Tracer` to keep application stdlib-pure |
+| 0013   | Reconciler stuck-queued sweep with `scheduled_at` guard                  |
+| 0014   | PostgreSQL as the relational store (vs MySQL / MongoDB)                  |
+| 0015   | Asynq-native retry; reconciler narrowed to safety-net only (supersedes part of 0011) |
 
 ---
 
