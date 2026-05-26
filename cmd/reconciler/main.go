@@ -134,5 +134,6 @@ func runOnce(ctx context.Context, uc *application.ReconcileStuckNotifications) {
 		"stuck_processing_failed", out.StuckProcessingFailed,
 		"overdue_retrying_reenqueued", out.OverdueRetryingReenqueued,
 		"orphaned_pending_reenqueued", out.OrphanedPendingReenqueued,
+		"stuck_queued_reenqueued", out.StuckQueuedReenqueued,
 	)
 }
