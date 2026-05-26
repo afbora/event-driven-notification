@@ -1,0 +1,32 @@
+# docker-compose.failtest.yml — flip MockProvider into a failure mode.
+#
+# Layers on top of docker-compose.yml; pick the mode at run-time via
+# the MODE shell var (defaults to transient if unset):
+#
+#   # transient (5xx-class, retryable) — drives the F retry path
+#   docker compose -f docker-compose.yml -f docker-compose.failtest.yml up -d
+#
+#   # permanent (4xx-class, non-retryable) — drives the G circuit-breaker path
+#   MODE=permanent \
+#     docker compose -f docker-compose.yml -f docker-compose.failtest.yml up -d
+#
+# Production defaults stay in docker-compose.yml (success_rate=1.0,
+# failure_mode=transient). This overlay exists so the E2E suite's F+G
+# scenarios — marked SKIP in E2E_REPORT.md because MockProvider had no
+# runtime knob — can be live-verified end-to-end, and so the M2+M3
+# asynq-native retry shift has a deterministic failure source to
+# observe behavior against.
+#
+# Why two modes and not a single boolean: F and G want different
+# failure shapes. Retry needs 5xx-class (retryable) so the worker
+# transitions to retrying; circuit breaker needs sustained 4xx or
+# 5xx pressure to trip — the permanent mode keeps the failure stream
+# steady without the retrying-then-success oscillation a partial
+# success rate would introduce.
+
+services:
+  worker:
+    environment:
+      # Always fail under this overlay; MODE picks the shape.
+      MOCK_PROVIDER_SUCCESS_RATE:  "0"
+      MOCK_PROVIDER_FAILURE_MODE:  "${MODE:-transient}"

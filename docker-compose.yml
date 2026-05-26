@@ -127,6 +127,12 @@ services:
       # actually throttles, which needs the cap in place.
       OUTBOUND_RATE_LIMIT:         "100"
       OUTBOUND_RATE_WINDOW:        "1s"
+      # MockProvider knobs — production-equivalent defaults. The
+      # failtest overlay (docker-compose.failtest.yml) flips
+      # MOCK_PROVIDER_SUCCESS_RATE to 0 so the F (retry) and
+      # G (circuit breaker) e2e paths can be exercised live.
+      MOCK_PROVIDER_SUCCESS_RATE:  "1.0"
+      MOCK_PROVIDER_FAILURE_MODE:  "transient"
     volumes:
       - .:/src
       - go-mod-cache:/go/pkg/mod

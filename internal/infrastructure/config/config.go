@@ -104,6 +104,16 @@ func Load() (Config, error) {
 	if cfg.ReconcilerInterval, err = getDuration("RECONCILER_INTERVAL", time.Minute); err != nil {
 		return Config{}, err
 	}
+	if cfg.MockProviderSuccessRate, err = getFloat("MOCK_PROVIDER_SUCCESS_RATE", 1.0); err != nil {
+		return Config{}, err
+	}
+	if cfg.MockProviderSuccessRate < 0 || cfg.MockProviderSuccessRate > 1 {
+		return Config{}, fmt.Errorf("MOCK_PROVIDER_SUCCESS_RATE must be in [0, 1]; got %v", cfg.MockProviderSuccessRate)
+	}
+	cfg.MockProviderFailureMode = getString("MOCK_PROVIDER_FAILURE_MODE", "transient")
+	if cfg.MockProviderFailureMode != "transient" && cfg.MockProviderFailureMode != "permanent" {
+		return Config{}, fmt.Errorf("MOCK_PROVIDER_FAILURE_MODE must be one of: transient, permanent; got %q", cfg.MockProviderFailureMode)
+	}
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -129,6 +139,18 @@ func getInt(key string, fallback int) (int, error) {
 	v, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid integer for %s: %w", key, err)
+	}
+	return v, nil
+}
+
+func getFloat(key string, fallback float64) (float64, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid float for %s: %w", key, err)
 	}
 	return v, nil
 }
