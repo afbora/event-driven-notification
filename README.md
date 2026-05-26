@@ -86,7 +86,7 @@ the constitution (CLAUDE.md §1).
 | Signal | Where |
 |---|---|
 | Quality gate | SonarCloud **Passed** — 0 open issues, ≥80% new-code coverage |
-| CI pipeline | 8 jobs: lint, vuln, unit (race + coverage), integration, e2e, build, docker-smoke, sonarcloud upload |
+| CI pipeline | 8 jobs: lint, vuln, test-unit (race + coverage), test-integration, test-e2e, build, docker-build (smoke), sonarcloud |
 | Architecture | 15 ADRs in [`docs/adr/`](./docs/adr/) — every load-bearing choice documented |
 | Test discipline | Strict TDD: every `feat` commit is preceded by a matching `test` commit. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the rhythm. |
 | Commit convention | Conventional Commits, lowercase, no trailing period (CLAUDE.md §8) |
