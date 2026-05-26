@@ -44,32 +44,52 @@ func main() {
 // linter flags any log.Fatalf that interpolates user-controlled input
 // even when it is parameterized through %v / %q).
 func run() error {
-	if len(os.Args) < 3 {
-		return fmt.Errorf("usage: %s <ws-url> <notification-id> [duration]", os.Args[0])
-	}
-	url := os.Args[1]
-	notifID := os.Args[2]
-
-	dur := 30 * time.Second
-	if len(os.Args) >= 4 {
-		d, err := time.ParseDuration(os.Args[3])
-		if err != nil {
-			return fmt.Errorf("invalid duration %q: %w", os.Args[3], err)
-		}
-		dur = d
+	url, notifID, dur, err := parseArgs(os.Args)
+	if err != nil {
+		return err
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dialCtx, cancelDial := context.WithTimeout(rootCtx, 10*time.Second)
+	conn, err := dialAndSubscribe(rootCtx, url, notifID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	return readLoop(rootCtx, conn, dur)
+}
+
+// parseArgs validates the CLI args and returns the dial url, the
+// notification id to subscribe to, and how long to keep reading. A
+// missing duration defaults to 30s.
+func parseArgs(argv []string) (string, string, time.Duration, error) {
+	if len(argv) < 3 {
+		return "", "", 0, fmt.Errorf("usage: %s <ws-url> <notification-id> [duration]", argv[0])
+	}
+	dur := 30 * time.Second
+	if len(argv) >= 4 {
+		d, err := time.ParseDuration(argv[3])
+		if err != nil {
+			return "", "", 0, fmt.Errorf("invalid duration %q: %w", argv[3], err)
+		}
+		dur = d
+	}
+	return argv[1], argv[2], dur, nil
+}
+
+// dialAndSubscribe opens the websocket and sends the subscribe frame.
+// Returns the live connection so the caller can drive the read loop
+// and own the close defer.
+func dialAndSubscribe(ctx context.Context, url, notifID string) (*websocket.Conn, error) {
+	dialCtx, cancelDial := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelDial()
 
 	conn, _, err := websocket.Dial(dialCtx, url, nil)
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", url, err)
+		return nil, fmt.Errorf("dial %s: %w", url, err)
 	}
-	defer func() { _ = conn.CloseNow() }()
 
 	fmt.Printf("[connected] %s\n", url)
 
@@ -77,12 +97,20 @@ func run() error {
 		"action":          "subscribe",
 		"notification_id": notifID,
 	})
-	if err := conn.Write(rootCtx, websocket.MessageText, subMsg); err != nil {
-		return fmt.Errorf("send subscribe: %w", err)
+	if werr := conn.Write(ctx, websocket.MessageText, subMsg); werr != nil {
+		_ = conn.CloseNow()
+		return nil, fmt.Errorf("send subscribe: %w", werr)
 	}
 	fmt.Printf("[sent] %s\n", subMsg)
+	return conn, nil
+}
 
-	readCtx, cancelRead := context.WithTimeout(rootCtx, dur)
+// readLoop pulls frames off the connection for the configured duration,
+// dumping each payload to stdout. Deadline / cancellation / server
+// close all surface as clean exits; unexpected read errors are
+// returned.
+func readLoop(ctx context.Context, conn *websocket.Conn, dur time.Duration) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, dur)
 	defer cancelRead()
 
 	for {

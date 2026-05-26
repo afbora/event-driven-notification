@@ -62,7 +62,7 @@ func TestCreateTemplate_InvalidChannel(t *testing.T) {
 // TestGetTemplate_HappyPath: returns whatever the repository holds.
 func TestGetTemplate_HappyPath(t *testing.T) {
 	repo := newFakeTemplateRepo()
-	created := mustNewTemplate(t, "01940000-0000-7000-8000-00000000ttt1", "welcome", domain.ChannelSMS)
+	created := mustNewTemplate(t, "01940000-0000-7000-8000-00000000ttt1", "welcome")
 	require.NoError(t, repo.Create(context.Background(), created))
 
 	uc := application.NewGetTemplate(repo)
@@ -92,7 +92,6 @@ func TestListTemplates_AppliesDefaultLimit(t *testing.T) {
 			mustNewTemplate(t,
 				domain.TemplateID("01940000-0000-7000-8000-00000000tt0"+string(rune('1'+i))),
 				"name-"+string(rune('a'+i)),
-				domain.ChannelSMS,
 			),
 		))
 	}
@@ -113,7 +112,6 @@ func TestReplaceTemplate_HappyPath(t *testing.T) {
 	original := mustNewTemplate(t,
 		"01940000-0000-7000-8000-00000000tt21",
 		"original-name",
-		domain.ChannelSMS,
 	)
 	require.NoError(t, repo.Create(context.Background(), original))
 
@@ -189,7 +187,7 @@ func TestListTemplates_RepoFails(t *testing.T) {
 // only after the Get + domain.NewTemplate succeed.
 func TestReplaceTemplate_UpdateFails(t *testing.T) {
 	repo := newFakeTemplateRepo()
-	original := mustNewTemplate(t, "01940000-0000-7000-8000-00000000tt77", "to-update", domain.ChannelSMS)
+	original := mustNewTemplate(t, "01940000-0000-7000-8000-00000000tt77", "to-update")
 	require.NoError(t, repo.Create(context.Background(), original))
 
 	repo.updateErr = errors.New("db unavailable")
@@ -213,7 +211,7 @@ func TestReplaceTemplate_UpdateFails(t *testing.T) {
 // returns ErrNotFound.
 func TestDeleteTemplate_HappyPath(t *testing.T) {
 	repo := newFakeTemplateRepo()
-	created := mustNewTemplate(t, "01940000-0000-7000-8000-00000000tt33", "doomed", domain.ChannelSMS)
+	created := mustNewTemplate(t, "01940000-0000-7000-8000-00000000tt33", "doomed")
 	require.NoError(t, repo.Create(context.Background(), created))
 
 	uc := application.NewDeleteTemplate(repo)
@@ -238,12 +236,16 @@ func TestDeleteTemplate_NotFound(t *testing.T) {
 
 // mustNewTemplate is a tiny domain-layer factory used by the template
 // tests above so individual cases stay readable.
-func mustNewTemplate(t *testing.T, id domain.TemplateID, name string, channel domain.Channel) *domain.Template {
+// mustNewTemplate builds a domain.Template with a fixed SMS channel
+// and a stock body. Every existing call site uses these defaults; if
+// a future test needs a different shape, add a dedicated builder
+// rather than re-introducing a parameter no caller exercises.
+func mustNewTemplate(t *testing.T, id domain.TemplateID, name string) *domain.Template {
 	t.Helper()
 	tpl, err := domain.NewTemplate(domain.NewTemplateInput{
 		ID:      id,
 		Name:    name,
-		Channel: channel,
+		Channel: domain.ChannelSMS,
 		Body:    "Hello {{.Name}}!",
 	}, fixedAppNow)
 	require.NoError(t, err)
