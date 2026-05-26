@@ -192,13 +192,35 @@ func run() error {
 // buildProvider chooses between webhook and mock per channel. Each
 // channel could be configured independently later; for now the same
 // shape applies to all three.
+//
+// MockProvider honors MOCK_PROVIDER_SUCCESS_RATE and
+// MOCK_PROVIDER_FAILURE_MODE so the dev stack can be flipped into a
+// failure mode at compose-time (see docker-compose.failtest.yml).
+// Defaults remain production-equivalent (always succeed, transient
+// shape when forced to fail) so `docker compose up -d` with no
+// overrides ships the same behavior it did before this knob existed.
 func buildProvider(cfg config.Config, _ domain.Channel) interface {
 	Send(ctx context.Context, channel domain.Channel, recipient, content string) domain.DeliveryResult
 } {
 	if cfg.WebhookProviderURL != "" {
 		return provideradapter.NewWebhookProvider(cfg.WebhookProviderURL, 5_000_000_000) // 5s
 	}
-	return provideradapter.NewMockProvider()
+	return provideradapter.NewMockProvider(
+		provideradapter.WithSuccessRate(cfg.MockProviderSuccessRate),
+		provideradapter.WithFailureMode(mockFailureMode(cfg.MockProviderFailureMode)),
+	)
+}
+
+// mockFailureMode translates the config string into the typed
+// MockProvider option. config.Load has already validated the value, so
+// any unexpected string here would be a programmer bug; we fall back
+// to the safe default (transient) rather than panicking — a misrouted
+// failure-mode string is observability noise, not corruption.
+func mockFailureMode(mode string) provideradapter.FailureMode {
+	if mode == "permanent" {
+		return provideradapter.FailurePermanent
+	}
+	return provideradapter.FailureTransient
 }
 
 // breakerSettings returns the gobreaker settings the worker uses for

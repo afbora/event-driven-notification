@@ -168,6 +168,26 @@ responses, log lines, and metric values inline as evidence. Re-run
 the same flow with `docker compose up -d` followed by the manual
 probes the report documents.
 
+To drive the retry and circuit-breaker paths against the live stack,
+overlay [`docker-compose.failtest.yml`](./docker-compose.failtest.yml)
+— it flips `MockProvider` into a deterministic failure mode (5xx-class
+by default, 4xx-class via `MODE=permanent`) so the worker actually
+sees the failure shape the unit tests inject:
+
+```bash
+# transient (5xx-class) — drives the retry path
+docker compose -f docker-compose.yml -f docker-compose.failtest.yml up -d
+
+# permanent (4xx-class) — drives the circuit-breaker path
+MODE=permanent \
+  docker compose -f docker-compose.yml -f docker-compose.failtest.yml up -d
+```
+
+The base `docker-compose.yml` keeps production-equivalent defaults
+(`MOCK_PROVIDER_SUCCESS_RATE=1.0`, `MOCK_PROVIDER_FAILURE_MODE=transient`)
+so `docker compose up -d` without the overlay still ships the
+always-succeed behavior the rest of the stack relies on.
+
 ---
 
 ## Repository layout
