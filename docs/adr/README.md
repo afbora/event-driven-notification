@@ -19,6 +19,7 @@ This directory contains the architectural decisions made for this project, in [M
 | [0011](0011-reconciler-no-outbox.md) | Reconciler-Based Dual-Write Mitigation; No Outbox Pattern | Accepted |
 | [0012](0012-tracer-port.md) | Wrap OpenTelemetry Behind ports.Tracer To Keep the Application Layer Stdlib-Pure | Accepted |
 | [0013](0013-reconciler-stuck-queued-sweep.md) | Reconciler Stuck-Queued Sweep With scheduled_at Guard | Accepted |
+| [0014](0014-postgresql-relational-store.md) | PostgreSQL As The Relational Store (vs MySQL / MongoDB) | Accepted |
 
 ## Adding A New ADR
 
