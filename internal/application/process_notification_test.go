@@ -143,9 +143,11 @@ func TestProcessNotification_PermanentFailure(t *testing.T) {
 	require.Equal(t, domain.LogEventFailed, f.logRepo.entries[1].Event)
 }
 
-// TestProcessNotification_TransientFailure: provider returns 5xx → retrying.
-// NextRetryAt is set; the worker hands control back to asynq which respects
-// the schedule.
+// TestProcessNotification_TransientFailure: provider returns 5xx →
+// retrying. NextRetryAt is set, BUT the use case now also returns a
+// non-nil sentinel error so asynq's RetryDelayFunc can re-schedule the
+// task natively — reconciler-driven retry was the prior shape and is
+// being narrowed to a true safety-net role (ADR-0015).
 func TestProcessNotification_TransientFailure(t *testing.T) {
 	f := newProcessFixture(t,
 		domain.TransientFailureResult("provider 503", 503, 2*time.Second),
@@ -156,21 +158,27 @@ func TestProcessNotification_TransientFailure(t *testing.T) {
 	err := f.uc.Execute(context.Background(), application.ProcessNotificationInput{
 		NotificationID: n.ID,
 	})
-	require.NoError(t, err)
+	require.Error(t, err,
+		"transient failure must surface as a non-nil error so asynq retries the task natively")
+	require.ErrorIs(t, err, application.ErrProviderTransient,
+		"the error must be the typed sentinel so the worker's RetryDelayFunc can route by errors.Is")
 
 	final := f.repo.store[n.ID]
 	require.Equal(t, domain.StatusRetrying, final.Status)
 	require.Equal(t, "provider 503", final.LastError)
-	require.NotNil(t, final.NextRetryAt, "transient failure must schedule a retry time")
-	require.True(t, final.NextRetryAt.After(fixedAppNow), "next retry must be in the future")
+	require.NotNil(t, final.NextRetryAt, "transient failure must still record a hint for the reconciler safety-net")
+	require.True(t, final.NextRetryAt.After(fixedAppNow), "next retry hint must be in the future")
 
 	require.Len(t, f.logRepo.entries, 2)
 	require.Equal(t, domain.LogEventRetrying, f.logRepo.entries[1].Event)
 }
 
-// TestProcessNotification_RateLimited: outbound limit rejects this attempt.
-// The provider is not called; the notification stays in retrying so the
-// queue can re-deliver it after a short delay.
+// TestProcessNotification_RateLimited: outbound limit rejects this
+// attempt. The provider is not called; the notification falls back
+// into retrying AND the use case returns a distinct sentinel
+// (ErrOutboundRateLimited) so the worker's RetryDelayFunc applies the
+// short rate-limit backoff instead of the exponential transient
+// schedule.
 func TestProcessNotification_RateLimited(t *testing.T) {
 	f := newProcessFixture(t,
 		domain.DeliveredResult("never-used", 0),
@@ -182,7 +190,12 @@ func TestProcessNotification_RateLimited(t *testing.T) {
 	err := f.uc.Execute(context.Background(), application.ProcessNotificationInput{
 		NotificationID: n.ID,
 	})
-	require.NoError(t, err)
+	require.Error(t, err,
+		"rate-limited attempt must surface as a non-nil error so asynq retries the task with the rate-limit delay")
+	require.ErrorIs(t, err, application.ErrOutboundRateLimited,
+		"the error must be the rate-limit sentinel so RetryDelayFunc applies the short backoff, not the exponential one")
+	require.NotErrorIs(t, err, application.ErrProviderTransient,
+		"the rate-limit sentinel must NOT also satisfy errors.Is(ErrProviderTransient) — they pick different backoffs")
 
 	// Provider never called.
 	require.Empty(t, f.provider.calls)
