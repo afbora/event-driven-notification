@@ -14,6 +14,7 @@ linters:
   default: none
   enable:
     - errcheck       # report unchecked errors
+    - gocognit       # cognitive complexity (Sonar S3776 parity)
     - gocritic       # opinionated style and performance checks
     - gocyclo        # cyclomatic complexity ceiling
     - gosec          # common security mistakes
@@ -22,10 +23,21 @@ linters:
     - misspell       # spelling in comments and strings
     - revive         # idiomatic Go style (golint successor)
     - staticcheck    # the SA family of static checks
+    - unparam        # unused function parameters
     - unused         # unused functions, types, variables
 
   settings:
+    # gocyclo measures cyclomatic complexity (count of decision points). Kept
+    # at 15 as a coarse ceiling against runaway control flow.
     gocyclo:
+      min-complexity: 15
+    # gocognit measures cognitive complexity (nesting-penalty model) and is the
+    # direct local parity for SonarCloud's go:S3776. Sonar's default threshold
+    # is 15; we mirror it so local `make lint` catches what the CI Sonar pass
+    # would otherwise flag after push. Caught reactively three times before
+    # this config landed (M1 reconciler Execute, idempotency middleware,
+    # the M1 refactor follow-up).
+    gocognit:
       min-complexity: 15
     misspell:
       locale: US
@@ -35,6 +47,14 @@ linters:
         # We override misspell here rather than switching the whole codebase to
         # `canceled`, because the choice is deliberate, not accidental.
         - cancelled
+    # revive: extra rules beyond the defaults to bring more Sonar-side smells
+    # forward to local lint. Each rule maps to a real catch we either hit on
+    # SonarCloud already or want to head off.
+    revive:
+      rules:
+        # Default rules stay enabled (golangci-lint's revive preset).
+        - name: empty-block        # parity for Sonar S1186 (empty fn bodies must be commented)
+        - name: unused-parameter   # complements unparam from a different angle
 
   exclusions:
     rules:
@@ -42,11 +62,13 @@ linters:
       # frequently trip gosec heuristics around hard-coded credentials in fixtures.
       - path: _test\.go
         linters:
+          - gocognit
           - gocyclo
           - gosec
       # cmd/*/main.go ties every dependency together; some breadth is expected.
       - path: cmd/.+/main\.go
         linters:
+          - gocognit
           - gocyclo
 
 formatters:

@@ -21,7 +21,6 @@ func newCreateNotification(t *testing.T) (
 	*fakeNotificationRepo,
 	*fakeNotificationLogRepo,
 	*fakeQueue,
-	*fakeIDGenerator,
 ) {
 	t.Helper()
 	repo := newFakeNotificationRepo()
@@ -31,13 +30,13 @@ func newCreateNotification(t *testing.T) (
 	idGen := newDefaultFakeIDs()
 	clock := newFakeClock(fixedAppNow)
 	uc := application.NewCreateNotification(repo, logRepo, tmplRepo, queue, idGen, clock, nil)
-	return uc, repo, logRepo, queue, idGen
+	return uc, repo, logRepo, queue
 }
 
 // TestCreateNotification_HappyPath exercises the immediate-delivery path:
 // SMS notification with a caller-supplied correlation ID.
 func TestCreateNotification_HappyPath(t *testing.T) {
-	uc, repo, logRepo, queue, _ := newCreateNotification(t)
+	uc, repo, logRepo, queue := newCreateNotification(t)
 
 	n, err := uc.Execute(context.Background(), application.CreateNotificationInput{
 		Channel:       "sms",
@@ -79,7 +78,7 @@ func TestCreateNotification_HappyPath(t *testing.T) {
 // empty correlation ID triggers server-side generation via IDGenerator. This
 // preserves the invariant in CLAUDE.md §2.3 that every notification has one.
 func TestCreateNotification_GeneratesCorrelationIDIfMissing(t *testing.T) {
-	uc, _, logRepo, _, _ := newCreateNotification(t)
+	uc, _, logRepo, _ := newCreateNotification(t)
 
 	n, err := uc.Execute(context.Background(), application.CreateNotificationInput{
 		Channel:   "email",
@@ -98,7 +97,7 @@ func TestCreateNotification_GeneratesCorrelationIDIfMissing(t *testing.T) {
 // TestCreateNotification_InvalidChannel confirms input parsing fails fast
 // before any side effects (no repo write, no log entry, no enqueue).
 func TestCreateNotification_InvalidChannel(t *testing.T) {
-	uc, repo, logRepo, queue, _ := newCreateNotification(t)
+	uc, repo, logRepo, queue := newCreateNotification(t)
 
 	_, err := uc.Execute(context.Background(), application.CreateNotificationInput{
 		Channel:       "fax",
@@ -117,7 +116,7 @@ func TestCreateNotification_InvalidChannel(t *testing.T) {
 // TestCreateNotification_Scheduled exercises the future-delivery path: the
 // queue receives EnqueueScheduled, not Enqueue.
 func TestCreateNotification_Scheduled(t *testing.T) {
-	uc, _, _, queue, _ := newCreateNotification(t)
+	uc, _, _, queue := newCreateNotification(t)
 	scheduled := fixedAppNow.Add(6 * time.Hour)
 
 	n, err := uc.Execute(context.Background(), application.CreateNotificationInput{
