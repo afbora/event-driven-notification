@@ -38,6 +38,19 @@ type Config struct {
 	OutboundRateLimit  int // messages per OutboundRateWindow per channel
 	OutboundRateWindow time.Duration
 
+	// MockProviderSuccessRate controls the local MockProvider's
+	// deterministic success/failure split. Defaults to 1.0 (always
+	// succeed) so the dev compose stack ships production-equivalent
+	// behavior; the loadtest / failtest overlays set it to 0 to drive
+	// the F (retry) and G (circuit breaker) end-to-end paths.
+	MockProviderSuccessRate float64
+
+	// MockProviderFailureMode picks the failure shape when the
+	// success rate produces a failure: "transient" (5xx-class,
+	// retryable) or "permanent" (4xx-class, non-retryable).
+	// Defaults to "transient".
+	MockProviderFailureMode string
+
 	// --- reconciler -------------------------------------------------
 	ReconcilerInterval time.Duration
 
