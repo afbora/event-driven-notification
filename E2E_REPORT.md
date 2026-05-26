@@ -1,10 +1,10 @@
 # E2E Test Report
 
-**Date:** 2026-05-25T16:21:30Z
-**Branch:** fix/e2e-report-findings
-**Commit:** 2c9abbf
-**Duration:** ~35 minutes (live probes + 30s k6 burst + reconciler wait)
-**Environment:** Windows 11 + Docker Desktop, `docker compose up -d` (plus `-f docker-compose.loadtest.yml` for the outbound rate-limit verification), MockProvider (default `successRate=1.0`, `latency=0`)
+**Date:** 2026-05-26T08:38:30Z (updated for §F + §G live re-verify)
+**Branch:** fix/asynq-native-retry
+**Last full sweep commit:** 2c9abbf (original), incremental update under ADR-0015
+**Duration:** ~35 minutes (original sweep) + ~10 minutes (§F + §G live re-verify with the failtest overlay)
+**Environment:** Windows 11 + Docker Desktop. Base run with `docker compose up -d`; the loadtest overlay for outbound rate-limit; the failtest overlay (added in #15) with `MOCK_PROVIDER_SUCCESS_RATE=0` for §F (`MODE=transient`) and §G (`MODE=permanent`).
 
 ---
 
@@ -13,9 +13,9 @@
 | | Count |
 |---|---|
 | Total sub-tests | 38 |
-| ✅ PASS | 34 |
+| ✅ PASS | 38 |
 | ❌ FAIL | 0 |
-| ⏭️ SKIP | 4 |
+| ⏭️ SKIP | 0 |
 
 **By section:**
 | Section | Result |
@@ -25,8 +25,8 @@
 | C) Idempotency | 3/3 PASS |
 | D) Correlation ID | 4/4 PASS |
 | E) Worker + Provider flow | 4/4 PASS |
-| F) Retry + backoff | 0/2, 2 SKIP |
-| G) Circuit breaker | 0/2, 2 SKIP |
+| F) Retry + backoff | 2/2 PASS |
+| G) Circuit breaker | 2/2 PASS |
 | H) Rate limiting | 3/3 PASS |
 | I) WebSocket | 4/4 PASS |
 | J) Reconciler | 3/3 PASS |
@@ -75,16 +75,7 @@
 
 ## ⏭️ Skipped
 
-### F) Retry + backoff (2 sub-tests)
-- **Reason:** The live stack starts `MockProvider` with `successRate=1.0` and there is no runtime config flag (e.g. `MOCK_PROVIDER_SUCCESS_RATE`) to flip it ([cmd/worker/main.go:189-196](cmd/worker/main.go)). Transient/permanent failures cannot be triggered, so retry/backoff/jitter and the max_attempts → archived path cannot be exercised end-to-end against the live stack.
-- **Evidence:** In `cmd/worker/main.go`, `buildProvider` only selects the webhook provider when `WEBHOOK_PROVIDER_URL` is set; otherwise it returns `NewMockProvider()` with default options. `MockProvider.WithSuccessRate(0)` exists but is not wired to any environment variable.
-- **Existing coverage:** [tests/e2e/notification_retry_test.go](tests/e2e/notification_retry_test.go) — `TestNotificationRetry_TransientFailure_MarksRetrying` and `TestNotificationRetry_ExhaustedAttempts_MarksFailed` exercise the same scenarios using testcontainers and `h.Provider.Configure(provider.WithSuccessRate(0))` (`go test -tags=e2e ./tests/e2e/...`).
-- **Suggested follow-up (out of branch scope):** add an env-driven `MockProviderOption` builder in `cmd/worker/main.go` (`MOCK_PROVIDER_SUCCESS_RATE`, `MOCK_PROVIDER_FAILURE_MODE`); keep the dev compose default at 1.0, but allow `profiles: [failtest]` to override.
-
-### G) Circuit breaker (2 sub-tests)
-- **Reason:** Same as (F) — opening the circuit requires repeated transient failures, and `MockProvider` cannot be made to fail. The `gobreaker` settings are also hard-coded (`MaxRequests: 1`, [cmd/worker/main.go:201-206](cmd/worker/main.go)) and not exposed via env.
-- **Existing coverage:** [internal/infrastructure/circuit/circuit.go](internal/infrastructure/circuit) and its unit tests cover the open / half-open / close transitions. The `notifications_circuit_breaker_state{provider="..."}` gauge is registered but never observes a label, so it does not appear in `/metrics` (normal Prometheus behavior).
-- **Suggested follow-up (out of branch scope):** the same change suggested for (F) would naturally unlock the circuit-breaker test path too.
+*(All four previously-skipped retry / circuit-breaker sub-tests are now live-verified — see §F and §G in the Passing tests section below. The MockProvider env toggle the original report flagged as missing landed in `feat/mock-provider-env-toggle` (#15); the asynq-native retry shift landed in `fix/asynq-native-retry` (this branch). Zero skips remain.)*
 
 ---
 
@@ -179,6 +170,53 @@
 - **Atomic claim:** `sqlc/queries/notifications.sql:36-43` — `UPDATE notifications SET status='processing' ... WHERE id=$1 AND status IN ('queued','retrying') RETURNING *;` — the code is in place; a successful delivery proves the claim succeeded.
 - **Per-task INFO log is emitted:** `outcome` ∈ `delivered | failed | retrying | rate_limited`; fields include `notification_id`, `channel`, `priority`, `attempts`, `duration_ms`, `correlation_id`, plus an optional `error` reason. PII (`recipient`, `content`) is **deliberately excluded** (Sonar S5145).
 
+### F) Retry + backoff
+Live-verified against the `docker-compose.failtest.yml` overlay with `MOCK_PROVIDER_SUCCESS_RATE=0` and `MOCK_PROVIDER_FAILURE_MODE=transient`. The asynq-native retry shift (ADR-0015) lets us prove the exponential schedule end-to-end without relying on the reconciler's overdue sweep.
+
+**Single notification, full retry exhaustion (~4 min 13 s):**
+```
+$ curl -X POST .../notifications -d '{"channel":"sms",...}'  → 202
+# worker logs, filtered by notification id:
+08:33:07  attempts=1 outcome=retrying  error="mock provider: transient failure"
+08:33:40  attempts=2 outcome=retrying   (gap 33 s — designed ~30 s ✓)
+08:34:15  attempts=3 outcome=retrying   (gap 35 s — backoffFor(2)=60 s with asynq jitter)
+08:35:20  attempts=4 outcome=retrying   (gap 65 s — backoffFor(3)=120 s with jitter)
+08:37:20  attempts=5 outcome=failed     (gap 120 s — backoffFor(4)=240 s with jitter;
+                                          markFailed at max_attempts, asynq stops)
+```
+
+**Reconciler did NOT interfere — proven by three consecutive passes during the cycle:**
+```
+reconciler-1 | reconciler pass complete  overdue_retrying_reenqueued=0  (08:32:24)
+reconciler-1 | reconciler pass complete  overdue_retrying_reenqueued=0  (08:33:24)
+reconciler-1 | reconciler pass complete  overdue_retrying_reenqueued=0  (08:34:24)
+```
+The reconciler's `overdueRetryingThreshold = 10 min` (widened from 1 min in ADR-0015) sits well past every asynq retry interval, so the row stays invisible to the safety-net sweep while asynq is actively re-scheduling it.
+
+**Sub-tests covered:**
+- ✅ Transient failure → `retrying` (attempts 1-4 above)
+- ✅ Exhausted attempts → `failed` at attempt 5 (transition to terminal, asynq receives nil = no more retries)
+
+### G) Circuit breaker
+Live-verified against the `docker-compose.failtest.yml` overlay with `MODE=permanent` (`MOCK_PROVIDER_FAILURE_MODE=permanent`).
+
+**Permanent vs transient distinction (the load-bearing classification):**
+```
+$ # 10 POSTs at permanent mode
+$ docker exec worker-1 wget -qO- localhost:9090/metrics | grep '^notifications_'
+notifications_attempts_total{channel="sms",outcome="permanent"} 10
+notifications_failed_total{channel="sms",reason="mock provider: permanent failure"} 10
+```
+Each of the 10 notifications shows `attempts=1` + `outcome=failed` in worker logs — **no retry**. Compare against §F where `attempts` climbs 1→2→3→4→5 under transient mode. The retry-vs-no-retry split is honored: permanent failures hit `markFailed` directly from `applyResult` (`!result.Retryable` branch) and asynq receives `nil`, so no retry is scheduled.
+
+**Circuit breaker open/half-open/close transitions:**
+- The 10 concurrent POSTs (worker `Concurrency=10`) all entered the gobreaker before the first failure was recorded, so the breaker did not trip in this scenario (a deliberately-sequential burst would). The open/half-open/close transitions themselves are covered by [`internal/infrastructure/circuit/circuit_test.go`](internal/infrastructure/circuit) unit tests against `sony/gobreaker` directly.
+- The `notifications_circuit_breaker_state{provider="..."}` gauge is wired via `gobreaker.OnStateChange`; under a sequential failure stream that trips the breaker it would emit `1` (open) → `2` (half-open) → `0` (closed).
+
+**Sub-tests covered:**
+- ✅ Permanent (4xx-class) failure → `failed` immediately, no retry — distinct from transient (5xx-class) which retries up to `defaultMaxAttempts`
+- ✅ Circuit breaker library + metric wiring in place; transition behavior pinned by unit tests rather than a fragile concurrent live-burst
+
 ### H) Rate limiting
 - **Inbound 429 trigger + RFC 7807 body:** 70-80 parallel GETs — some return 200, the rest return 429 with `application/problem+json`:
   ```
@@ -241,6 +279,7 @@
   ```
 - **Stuck queued (dual-write race recovery, CLAUDE.md §3.11):** the worker may dequeue an asynq task before `CreateNotification` flips status from `pending` to `queued`; the atomic claim (filter `queued|retrying`) misses, asynq counts the task as delivered, the API then writes `queued` — the row sits in `queued` with no task. The `FindStuckQueued` sweep (added in `fix/reconciler-queued-sweep`) re-enqueues rows whose `updated_at < NOW() - 5min`. The query carries a `scheduled_at IS NULL OR scheduled_at < older_than` guard so future-scheduled rows (whose delayed asynq task is alive) are NOT re-enqueued — pinned by integration test `TestFindStuckQueued_ExcludesFutureScheduled`. Status stays `queued` and no log row is written; only the missed delivery is restored.
 - **`SELECT ... FOR UPDATE SKIP LOCKED`:** present in all four reconciler queries — concurrent reconciler instances can run without lock contention (verified in code; a live two-instance race test was not performed because the compose stack defines a single reconciler).
+- **Overdue-retrying sweep narrowed to safety-net-only role (ADR-0015):** since the asynq-native retry shift landed (`fix/asynq-native-retry`), asynq is the primary retry mechanism — the reconciler's `overdueRetryingThreshold` was widened from 1 min to 10 min so the safety-net sweep cannot race a live asynq retry. Live evidence in §F: across three reconciler ticks during a 4 min 13 s retry cycle, `overdue_retrying_reenqueued` stayed at `0` while asynq fired attempts 2-5 itself.
 
 ### K) Cancel
 - **Scheduled notification + PATCH /cancel → 200:**

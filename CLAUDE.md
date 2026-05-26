@@ -266,7 +266,7 @@ The system follows **Hexagonal Architecture (Ports & Adapters)**. Three concentr
 
 **Failure paths:**
 
-- Provider returns 5xx or times out → marked `retrying` → asynq retries with exponential backoff + jitter (configurable: `30s * 2^(attempt-1) + jitter(0, 30s)`) → after `max_attempts` (default 5), task moves to dead letter queue and `notification.status=failed`.
+- Provider returns 5xx or times out → marked `retrying` → the use case returns `ErrProviderTransient`; the asynq processor surfaces it; asynq's `RetryDelayFunc` (wired in `cmd/worker`, delegating to `application.RetryDelayFor`) schedules the next attempt on the exponential schedule `30s * 2^(attempt-1)` → after `defaultMaxAttempts` (5), the use case marks `failed` and returns nil so asynq stops retrying. The reconciler's `FindOverdueRetrying` sweep is a safety net for the rare case where asynq itself loses the schedule (Redis flush, scheduler crash) and runs on a much looser threshold (10 minutes) so it cannot race a live asynq retry (ADR-0015).
 - Provider returns 4xx → no retry (permanent failure) → `notification.status=failed` immediately with reason from response.
 - Circuit breaker opens after 5 failures in 10 seconds → subsequent attempts fail fast for 30 seconds → half-open probe → close on success.
 - Redis unreachable → API returns 503 (readiness probe also fails); worker pauses processing until Redis recovers.

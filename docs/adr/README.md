@@ -20,6 +20,7 @@ This directory contains the architectural decisions made for this project, in [M
 | [0012](0012-tracer-port.md) | Wrap OpenTelemetry Behind ports.Tracer To Keep the Application Layer Stdlib-Pure | Accepted |
 | [0013](0013-reconciler-stuck-queued-sweep.md) | Reconciler Stuck-Queued Sweep With scheduled_at Guard | Accepted |
 | [0014](0014-postgresql-relational-store.md) | PostgreSQL As The Relational Store (vs MySQL / MongoDB) | Accepted |
+| [0015](0015-asynq-native-retry.md) | Asynq-Native Retry; Reconciler Narrowed To Safety-Net Only | Accepted (supersedes part of 0011) |
 
 ## Adding A New ADR
 
