@@ -119,6 +119,8 @@ services:
       DATABASE_URL:                postgres://notification:notification@postgres:5432/notification?sslmode=disable
       REDIS_ADDR:                  redis:6379
       LOG_LEVEL:                   info
+      # config.go's code default is 25; the dev stack deliberately runs 10 so
+      # a developer laptop is not saturated. Raise this per-deployment in prod.
       WORKER_CONCURRENCY:          "10"
       OTEL_EXPORTER_OTLP_ENDPOINT: ""
       # Outbound (per-channel) rate limit defaults made explicit. The

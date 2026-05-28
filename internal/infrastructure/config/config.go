@@ -92,6 +92,10 @@ func Load() (Config, error) {
 	if cfg.IdempotencyTTL, err = getDuration("IDEMPOTENCY_TTL", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
+	// Code default is 25 (a sensible single-node ceiling). docker-compose.yml
+	// deliberately overrides it to 10 for the dev stack so a developer laptop
+	// is not saturated; production sets it per-deployment at the orchestration
+	// layer. The two values diverging on purpose is documented in both places.
 	if cfg.WorkerConcurrency, err = getInt("WORKER_CONCURRENCY", 25); err != nil {
 		return Config{}, err
 	}
