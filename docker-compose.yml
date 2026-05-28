@@ -135,6 +135,12 @@ services:
       # G (circuit breaker) e2e paths can be exercised live.
       MOCK_PROVIDER_SUCCESS_RATE:  "1.0"
       MOCK_PROVIDER_FAILURE_MODE:  "transient"
+      # Circuit breaker thresholds made explicit (ADR-0016). Defaults match
+      # CLAUDE.md §5: open after 5 transient failures within a 10s window,
+      # fail fast for 30s, then probe. Tune per deploy without a rebuild.
+      CIRCUIT_MAX_FAILURES:        "5"
+      CIRCUIT_WINDOW:              "10s"
+      CIRCUIT_OPEN_TIMEOUT:        "30s"
     volumes:
       - .:/src
       - go-mod-cache:/go/pkg/mod

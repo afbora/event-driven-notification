@@ -100,10 +100,18 @@ func run() error {
 		registry.Register(ch, buildProvider(cfg, ch))
 	}
 	// Wrap the registry in a circuit breaker so a sick provider opens
-	// the circuit and short-circuits subsequent calls (CLAUDE.md §3.x,
-	// ADR-0008). gobreaker's defaults are fine for this assessment;
-	// thresholds become an ADR later if traffic grows.
-	guardedProvider := circuit.New(registry, breakerSettings("provider-registry", appMetrics))
+	// the circuit and short-circuits subsequent calls (CLAUDE.md §3.5/§5,
+	// ADR-0016). Thresholds come from config (defaults 5 failures / 10s
+	// window / 30s open) rather than gobreaker's implicit defaults, so the
+	// running behavior matches the documented contract and an operator can
+	// tune it per deploy.
+	guardedProvider := circuit.New(registry, breakerSettings(
+		"provider-registry",
+		cfg.CircuitMaxFailures,
+		cfg.CircuitWindow,
+		cfg.CircuitOpenTimeout,
+		appMetrics,
+	))
 
 	// --- application use case ------------------------------------------
 	// Tracer is wired via the dedicated port adapter so the application
@@ -277,19 +285,36 @@ func mockFailureMode(mode string) provideradapter.FailureMode {
 	return provideradapter.FailureTransient
 }
 
-// breakerSettings returns the gobreaker settings the worker uses for
-// every provider. Modest thresholds because a production tuning
-// requires real-world data — phase 5/6 may pull these into config.
+// breakerSettings returns the gobreaker settings the worker uses for the
+// provider registry. The thresholds are explicit (ADR-0016) so the running
+// breaker matches CLAUDE.md §5's documented behavior instead of gobreaker's
+// implicit defaults (which trip at >5 *consecutive* failures and stay open
+// 60s — both wrong against the constitution):
+//
+//   - ReadyToTrip fires once TotalFailures reaches maxFailures within the
+//     current counting window. The breaker only counts transient failures as
+//     failures (see internal/infrastructure/circuit), so a burst of caller
+//     4xx errors never trips it — only genuine provider sickness does.
+//   - Interval (window) is gobreaker's closed-state count-clear period, so
+//     "maxFailures within window" is a fixed window, not a sliding one.
+//   - Timeout (openTimeout) is how long the breaker fails fast before letting
+//     a single half-open probe (MaxRequests=1) through.
 //
 // OnStateChange is wired so transitions land on the
-// notifications_circuit_breaker_state gauge (0=closed, 1=open,
-// 2=half-open). m may be nil — the callback short-circuits and the
-// gauge stays unobserved, matching the previous behavior on bare
-// Settings construction.
-func breakerSettings(name string, m *metrics.Metrics) gobreaker.Settings {
+// notifications_circuit_breaker_state gauge (0=closed, 1=open, 2=half-open).
+// m may be nil — the callback short-circuits and the gauge stays unobserved,
+// matching the previous behavior on bare Settings construction.
+func breakerSettings(name string, maxFailures int, window, openTimeout time.Duration, m *metrics.Metrics) gobreaker.Settings {
 	return gobreaker.Settings{
 		Name:        name,
 		MaxRequests: 1,
+		Interval:    window,
+		Timeout:     openTimeout,
+		ReadyToTrip: func(c gobreaker.Counts) bool {
+			// uint32 -> int is safe on the 64-bit targets we ship; comparing
+			// in int avoids a lossy int -> uint32 conversion of the config value.
+			return int(c.TotalFailures) >= maxFailures
+		},
 		OnStateChange: func(stateName string, _, to gobreaker.State) {
 			if m == nil {
 				return

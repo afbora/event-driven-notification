@@ -51,6 +51,17 @@ type Config struct {
 	// Defaults to "transient".
 	MockProviderFailureMode string
 
+	// --- circuit breaker (worker) -----------------------------------
+	// Thresholds for the provider circuit breaker (ADR-0016). These map
+	// directly onto CLAUDE.md §5's documented behavior: open after
+	// CircuitMaxFailures transient failures within CircuitWindow, fail
+	// fast for CircuitOpenTimeout, then let a single half-open probe
+	// through. Defaults (5 / 10s / 30s) match the constitution; making
+	// them configurable lets a deploy tune the breaker without a rebuild.
+	CircuitMaxFailures int
+	CircuitWindow      time.Duration
+	CircuitOpenTimeout time.Duration
+
 	// --- reconciler -------------------------------------------------
 	ReconcilerInterval time.Duration
 
@@ -108,15 +119,11 @@ func Load() (Config, error) {
 	if cfg.ReconcilerInterval, err = getDuration("RECONCILER_INTERVAL", time.Minute); err != nil {
 		return Config{}, err
 	}
-	if cfg.MockProviderSuccessRate, err = getFloat("MOCK_PROVIDER_SUCCESS_RATE", 1.0); err != nil {
+	if err = loadMockProvider(&cfg); err != nil {
 		return Config{}, err
 	}
-	if cfg.MockProviderSuccessRate < 0 || cfg.MockProviderSuccessRate > 1 {
-		return Config{}, fmt.Errorf("MOCK_PROVIDER_SUCCESS_RATE must be in [0, 1]; got %v", cfg.MockProviderSuccessRate)
-	}
-	cfg.MockProviderFailureMode = getString("MOCK_PROVIDER_FAILURE_MODE", "transient")
-	if cfg.MockProviderFailureMode != "transient" && cfg.MockProviderFailureMode != "permanent" {
-		return Config{}, fmt.Errorf("MOCK_PROVIDER_FAILURE_MODE must be one of: transient, permanent; got %q", cfg.MockProviderFailureMode)
+	if err = loadCircuitBreaker(&cfg); err != nil {
+		return Config{}, err
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -126,6 +133,56 @@ func Load() (Config, error) {
 		return Config{}, errors.New("REDIS_ADDR is required")
 	}
 	return cfg, nil
+}
+
+// loadMockProvider parses and validates the local MockProvider knobs onto cfg.
+// Split out of Load (alongside loadCircuitBreaker) so Load stays under the
+// cognitive- and cyclomatic-complexity ceilings; the success-rate and
+// failure-mode knobs are a self-contained group whose validation belongs
+// together. Defaults are production-equivalent (always succeed, transient
+// shape) per CLAUDE.md §2.7.
+func loadMockProvider(cfg *Config) error {
+	var err error
+	if cfg.MockProviderSuccessRate, err = getFloat("MOCK_PROVIDER_SUCCESS_RATE", 1.0); err != nil {
+		return err
+	}
+	if cfg.MockProviderSuccessRate < 0 || cfg.MockProviderSuccessRate > 1 {
+		return fmt.Errorf("MOCK_PROVIDER_SUCCESS_RATE must be in [0, 1]; got %v", cfg.MockProviderSuccessRate)
+	}
+	cfg.MockProviderFailureMode = getString("MOCK_PROVIDER_FAILURE_MODE", "transient")
+	if cfg.MockProviderFailureMode != "transient" && cfg.MockProviderFailureMode != "permanent" {
+		return fmt.Errorf("MOCK_PROVIDER_FAILURE_MODE must be one of: transient, permanent; got %q", cfg.MockProviderFailureMode)
+	}
+	return nil
+}
+
+// loadCircuitBreaker parses and validates the circuit-breaker thresholds onto
+// cfg (ADR-0016). Split out of Load so Load stays under the cognitive-
+// complexity ceiling (gocognit / Sonar S3776) — the three knobs are a
+// self-contained group. Each value must be positive: a zero or negative trip
+// count or timeout would either trip instantly or never, so Load fails fast
+// and names the offending var rather than shipping a dead breaker.
+func loadCircuitBreaker(cfg *Config) error {
+	var err error
+	if cfg.CircuitMaxFailures, err = getInt("CIRCUIT_MAX_FAILURES", 5); err != nil {
+		return err
+	}
+	if cfg.CircuitMaxFailures <= 0 {
+		return fmt.Errorf("CIRCUIT_MAX_FAILURES must be a positive integer; got %d", cfg.CircuitMaxFailures)
+	}
+	if cfg.CircuitWindow, err = getDuration("CIRCUIT_WINDOW", 10*time.Second); err != nil {
+		return err
+	}
+	if cfg.CircuitWindow <= 0 {
+		return fmt.Errorf("CIRCUIT_WINDOW must be a positive duration; got %s", cfg.CircuitWindow)
+	}
+	if cfg.CircuitOpenTimeout, err = getDuration("CIRCUIT_OPEN_TIMEOUT", 30*time.Second); err != nil {
+		return err
+	}
+	if cfg.CircuitOpenTimeout <= 0 {
+		return fmt.Errorf("CIRCUIT_OPEN_TIMEOUT must be a positive duration; got %s", cfg.CircuitOpenTimeout)
+	}
+	return nil
 }
 
 func getString(key, fallback string) string {
