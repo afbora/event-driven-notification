@@ -35,7 +35,7 @@ Implementation:
 - `application.RetryDelayFor(attempts, err) time.Duration` is the single policy API:
   - `errors.Is(err, ErrOutboundRateLimited)` → `rateLimitBackoff` (1 s).
   - everything else (transient sentinel + any unwrapped infrastructure error from the claim path) → `backoffFor(attempts)` (30 s, 60 s, 120 s, ...).
-- `cmd/worker/main.go` wires a one-line `retryDelay` shim that delegates to `application.RetryDelayFor` and sets it on `asynq.Config.RetryDelayFunc`. Policy stays in the application package; the worker only configures asynq.
+- `cmd/worker/main.go` wires a `retryDelay` shim that delegates to `application.RetryDelayFor` and sets it on `asynq.Config.RetryDelayFunc`. The deterministic schedule stays in the application package (so it stays unit-testable); the worker layers bounded jitter (`withJitter`) on top at this boundary, which is how the constitution's "exponential backoff **with jitter**" wording is honored without making the core policy non-deterministic.
 - `overdueRetryingThreshold` widens from 1 minute to **10 minutes**. The reconciler now only catches rows where asynq has truly lost the schedule (Redis flush, scheduler crash). Under healthy operation a retry fires within seconds — well inside the new threshold.
 
 ## Consequences

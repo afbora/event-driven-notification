@@ -13,9 +13,10 @@ import (
 )
 
 // Retry policy constants. CLAUDE.md §5 specifies 5 attempts with exponential
-// backoff (30s * 2^(attempt-1) + jitter). Jitter is omitted here so the
-// state-machine behavior is deterministic for tests; the asynq adapter
-// applies its own retry schedule on top, so this is best-effort scheduling.
+// backoff (30s * 2^(attempt-1) + jitter). The backoff here is kept
+// deterministic so the state-machine unit tests can pin exact values; the
+// jitter the constitution calls for is applied one layer out, at the worker's
+// asynq RetryDelayFunc (cmd/worker's withJitter), not in this package.
 const (
 	defaultMaxAttempts = 5
 	backoffBase        = 30 * time.Second
@@ -342,8 +343,9 @@ func (uc *ProcessNotification) recordEvent(ctx context.Context, n *domain.Notifi
 }
 
 // backoffFor returns the retry delay for the given attempt count using the
-// exponential schedule from CLAUDE.md §5 (30s * 2^(attempts-1)). The asynq
-// adapter applies its own jitter on top of this.
+// exponential schedule from CLAUDE.md §5 (30s * 2^(attempts-1)). It stays
+// deterministic so unit tests pin exact values; the worker's RetryDelayFunc
+// (cmd/worker's withJitter) adds bounded jitter on top at the asynq boundary.
 func backoffFor(attempts int) time.Duration {
 	if attempts <= 0 {
 		return backoffBase
