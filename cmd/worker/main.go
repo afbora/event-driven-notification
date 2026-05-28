@@ -172,6 +172,16 @@ func run() error {
 		_ = metricsSrv.Shutdown(shutCtx)
 	}()
 
+	// --- queue-depth sampler -------------------------------------------
+	// The notifications_queue_depth gauge — and the HighQueueDepth alert
+	// that reads it — is otherwise only written in tests, so the alert can
+	// never fire in production. This loop polls asynq's pending backlog
+	// every 15s and stamps the gauge with a live series. It owns its own
+	// inspector connection and stops on rootCtx cancellation.
+	depthQueue := asynqadapter.NewQueue(hibikenasynq.RedisClientOpt{Addr: cfg.RedisAddr})
+	defer func() { _ = depthQueue.Close() }()
+	go sampleQueueDepth(rootCtx, depthQueue, appMetrics, 15*time.Second)
+
 	// asynq runs its own signal handler; we use rootCtx as a
 	// best-effort kill switch and rely on srv.Shutdown for graceful
 	// drain when the user hits Ctrl-C.
@@ -205,6 +215,32 @@ func run() error {
 // (the count of the attempt that just failed).
 func retryDelay(n int, err error, _ *hibikenasynq.Task) time.Duration {
 	return application.RetryDelayFor(n, err)
+}
+
+// sampleQueueDepth polls asynq's pending backlog on a fixed interval and
+// stamps the notifications_queue_depth gauge so the HighQueueDepth alert has
+// a live series to evaluate (the gauge is otherwise only written in tests).
+// Extracted from run() so that stays a thin wiring routine; it returns when
+// ctx is cancelled. A sampling error is logged and skipped — a transient
+// inspector hiccup must not kill the loop and freeze the gauge.
+func sampleQueueDepth(ctx context.Context, q *asynqadapter.Queue, m *metrics.Metrics, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			depths, err := q.QueueDepths(ctx)
+			if err != nil {
+				slog.Warn("queue depth sample failed", "error", err.Error())
+				continue
+			}
+			for name, depth := range depths {
+				m.SetQueueDepth(name, depth)
+			}
+		}
+	}
 }
 
 // buildProvider chooses between webhook and mock per channel. Each

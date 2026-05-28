@@ -123,6 +123,29 @@ func attributePriority(p domain.Priority) attribute.KeyValue {
 	return attribute.String("notification.priority", string(p))
 }
 
+// QueueDepths returns the number of pending (waiting) tasks in each priority
+// queue. "Pending" is exactly the backlog the HighQueueDepth alert watches —
+// tasks enqueued but not yet picked up by a worker. Scheduled (future) tasks
+// live in asynq's scheduled set and are deliberately excluded, so a
+// legitimately deferred notification never inflates the gauge and trips a
+// false alert. A queue asynq has never seen yet returns ErrQueueNotFound,
+// which we treat as depth 0 (no backlog) rather than an error.
+func (q *Queue) QueueDepths(_ context.Context) (map[string]int, error) {
+	depths := make(map[string]int, len(queueNames))
+	for _, name := range queueNames {
+		info, err := q.inspector.GetQueueInfo(name)
+		if err != nil {
+			if errors.Is(err, hibikenasynq.ErrQueueNotFound) {
+				depths[name] = 0
+				continue
+			}
+			return nil, fmt.Errorf("queue info %s: %w", name, err)
+		}
+		depths[name] = info.Pending
+	}
+	return depths, nil
+}
+
 // Cancel removes any pending or scheduled task for the notification. This
 // is best-effort by design (port docs): a task that has already been picked
 // up by a worker is not retracted — the worker checks status before sending
