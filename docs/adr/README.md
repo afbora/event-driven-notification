@@ -21,6 +21,7 @@ This directory contains the architectural decisions made for this project, in [M
 | [0013](0013-reconciler-stuck-queued-sweep.md) | Reconciler Stuck-Queued Sweep With scheduled_at Guard | Accepted |
 | [0014](0014-postgresql-relational-store.md) | PostgreSQL As The Relational Store (vs MySQL / MongoDB) | Accepted |
 | [0015](0015-asynq-native-retry.md) | Asynq-Native Retry; Reconciler Narrowed To Safety-Net Only | Accepted (supersedes part of 0011) |
+| [0016](0016-circuit-breaker-thresholds.md) | Explicit, Configurable Circuit-Breaker Thresholds | Accepted |
 
 ## Adding A New ADR
 

@@ -511,9 +511,10 @@ Headline numbers (reference hardware: 8-perf-core x86, 16 GB):
 
 ## Design decisions
 
-Fifteen ADRs in [`docs/adr/`](./docs/adr/) document the load-bearing
+Sixteen ADRs in [`docs/adr/`](./docs/adr/) document the load-bearing
 choices — most made before the first line of business code, the
-last four added during the case-review follow-up pass:
+most recent added during the case-review and post-review hardening
+passes:
 
 | ADR    | Decision                                                                 |
 |--------|--------------------------------------------------------------------------|
@@ -532,6 +533,7 @@ last four added during the case-review follow-up pass:
 | 0013   | Reconciler stuck-queued sweep with `scheduled_at` guard                  |
 | 0014   | PostgreSQL as the relational store (vs MySQL / MongoDB)                  |
 | 0015   | Asynq-native retry; reconciler narrowed to safety-net only (supersedes part of 0011) |
+| 0016   | Explicit, configurable circuit-breaker thresholds (5 failures / 10s window / 30s open) |
 
 ---
 
