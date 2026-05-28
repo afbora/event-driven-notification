@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	nethttp "net/http"
 	"os"
 	"os/signal"
@@ -216,13 +217,41 @@ func run() error {
 }
 
 // retryDelay is the asynq.RetryDelayFunc shim that delegates to the
-// application package's RetryDelayFor. Asynq calls this when a task's
-// handler returns a non-nil error; the application package owns the
-// actual policy so the routing keys (typed sentinels) and the timing
-// (exponential / rate-limit) live together. n is 1-indexed by asynq
-// (the count of the attempt that just failed).
+// application package's RetryDelayFor and then layers jitter on top.
+// Asynq calls this when a task's handler returns a non-nil error; the
+// application package owns the deterministic policy so the routing keys
+// (typed sentinels) and the timing (exponential / rate-limit) live
+// together and stay unit-testable, while the jitter the constitution
+// calls for (CLAUDE.md §5, "exponential backoff with jitter") is added
+// here at the boundary. n is 1-indexed by asynq (the count of the
+// attempt that just failed).
 func retryDelay(n int, err error, _ *hibikenasynq.Task) time.Duration {
-	return application.RetryDelayFor(n, err)
+	return withJitter(application.RetryDelayFor(n, err), rand.Int64N)
+}
+
+// maxRetryJitter caps the random spread added to each retry delay. Bounding
+// the jitter to a fixed ceiling (rather than scaling it to the full backoff)
+// de-correlates a thundering herd without letting late exponential delays
+// grow an unbounded random tail.
+const maxRetryJitter = 30 * time.Second
+
+// withJitter spreads retries to avoid a thundering herd: when a provider
+// recovers, many tasks whose backoff expired at the same instant would
+// otherwise re-fire together and re-overload it. The deterministic base
+// (application.RetryDelayFor) is left untouched so unit tests can pin exact
+// values; jitter is applied only here at the asynq boundary. It is additive
+// — it never shortens the base, so the rate-limit floor still holds — and the
+// added amount is clamped to maxRetryJitter. draw is injected (rand.Int64N in
+// production) so the bounds are testable without real randomness.
+func withJitter(base time.Duration, draw func(int64) int64) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	bound := base
+	if bound > maxRetryJitter {
+		bound = maxRetryJitter
+	}
+	return base + time.Duration(draw(int64(bound)))
 }
 
 // sampleQueueDepth polls asynq's pending backlog on a fixed interval and
