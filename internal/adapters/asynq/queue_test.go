@@ -178,6 +178,40 @@ func TestQueue_Cancel_UnknownNotification(t *testing.T) {
 	require.NoError(t, err, "missing task must not surface as an error (best-effort cancel)")
 }
 
+// TestQueue_QueueDepths reports the pending backlog per priority queue.
+// Enqueue a known mix across priorities and assert QueueDepths returns the
+// matching counts. The scheduled-task case is load-bearing: a future-delivery
+// task lives in asynq's scheduled set, NOT the pending backlog, so it must not
+// inflate any queue's depth — otherwise the HighQueueDepth alert would fire on
+// notifications that are legitimately waiting for their send time.
+func TestQueue_QueueDepths(t *testing.T) {
+	redisOpt, cleanup := setupRedisForAsynq(t)
+	defer cleanup()
+
+	q := asynqadapter.NewQueue(redisOpt)
+	defer func() { _ = q.Close() }()
+
+	inspector := hibikenasynq.NewInspector(redisOpt)
+	defer func() { _ = inspector.Close() }()
+	awaitInspector(t, inspector)
+
+	ctx := context.Background()
+
+	// Two pending on high, one on normal, none on low.
+	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000051"), domain.PriorityHigh, ""))
+	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000052"), domain.PriorityHigh, ""))
+	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000053"), domain.PriorityNormal, ""))
+
+	// A future-scheduled task must NOT count as pending backlog.
+	require.NoError(t, q.EnqueueScheduled(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000054"), domain.PriorityLow, time.Now().Add(time.Hour)))
+
+	depths, err := q.QueueDepths(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, depths["high"], "two pending high-priority tasks")
+	require.Equal(t, 1, depths["normal"], "one pending normal-priority task")
+	require.Equal(t, 0, depths["low"], "scheduled task is not pending backlog")
+}
+
 // TestQueue_Enqueue_IdempotencyKeyDeduplicates: enqueueing the same task id
 // twice within the uniqueness window must reject the duplicate (CLAUDE.md
 // §3.9 second layer).
