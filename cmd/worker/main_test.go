@@ -58,3 +58,32 @@ func TestBreakerSettings_TripsAtConfiguredThreshold(t *testing.T) {
 	require.True(t, s.ReadyToTrip(gobreaker.Counts{TotalFailures: 5}),
 		"5 failures within the window: breaker trips")
 }
+
+// TestWithJitter_BoundsAndCap pins the retry-jitter contract the worker applies
+// at the asynq RetryDelayFunc boundary. Jitter must be additive (never shorten
+// the deterministic base, so the rate-limit floor still holds) and the added
+// amount must be capped at maxRetryJitter (so a late exponential backoff does
+// not grow an unbounded random tail). The draw function is injected so the
+// bounds are testable without real randomness — production passes rand.Int64N.
+func TestWithJitter_BoundsAndCap(t *testing.T) {
+	zeroDraw := func(int64) int64 { return 0 }
+	maxDraw := func(n int64) int64 { return n - 1 } // rand.Int64N returns [0, n)
+
+	// Below the cap: bound == base. Zero draw is the floor (exactly base);
+	// max draw is base + (base − 1ns).
+	base := 10 * time.Second
+	require.Equal(t, base, withJitter(base, zeroDraw),
+		"zero jitter must return the base unchanged (additive floor)")
+	require.Equal(t, base+base-time.Duration(1), withJitter(base, maxDraw),
+		"below the cap the jitter bound is the base itself")
+
+	// Above the cap: the added jitter is clamped to maxRetryJitter regardless
+	// of how large the base backoff is.
+	big := 8 * time.Minute // attempt-5 exponential backoff
+	require.Equal(t, big+maxRetryJitter-time.Duration(1), withJitter(big, maxDraw),
+		"jitter must be capped at maxRetryJitter for large backoffs")
+
+	// Defensive: a non-positive base is returned unchanged (RetryDelayFor is
+	// always positive in practice, so this branch never fires in production).
+	require.Equal(t, time.Duration(0), withJitter(0, func(int64) int64 { return 99 }))
+}
