@@ -179,11 +179,16 @@ func TestQueue_Cancel_UnknownNotification(t *testing.T) {
 }
 
 // TestQueue_QueueDepths reports the pending backlog per priority queue.
-// Enqueue a known mix across priorities and assert QueueDepths returns the
-// matching counts. The scheduled-task case is load-bearing: a future-delivery
-// task lives in asynq's scheduled set, NOT the pending backlog, so it must not
-// inflate any queue's depth — otherwise the HighQueueDepth alert would fire on
-// notifications that are legitimately waiting for their send time.
+// Two properties are load-bearing and both are asserted here:
+//
+//   - A future-delivery task lives in asynq's scheduled set, NOT the pending
+//     backlog, so it must not inflate any queue's depth — otherwise the
+//     HighQueueDepth alert would fire on notifications legitimately waiting
+//     for their send time.
+//   - A priority with no traffic yet has no asynq queue at all. QueueDepths
+//     must report it as depth 0, not error out. (A live run caught this:
+//     GetQueueInfo returns a not-found error that is NOT ErrQueueNotFound, so
+//     the depth reader pre-checks the existing-queue set instead.)
 func TestQueue_QueueDepths(t *testing.T) {
 	redisOpt, cleanup := setupRedisForAsynq(t)
 	defer cleanup()
@@ -197,19 +202,21 @@ func TestQueue_QueueDepths(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Two pending on high, one on normal, none on low.
+	// Two pending on high, one pending on normal.
 	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000051"), domain.PriorityHigh, ""))
 	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000052"), domain.PriorityHigh, ""))
 	require.NoError(t, q.Enqueue(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000053"), domain.PriorityNormal, ""))
 
-	// A future-scheduled task must NOT count as pending backlog.
-	require.NoError(t, q.EnqueueScheduled(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000054"), domain.PriorityLow, time.Now().Add(time.Hour)))
+	// A future-scheduled task on an existing queue must NOT count as pending
+	// backlog (it lives in asynq's scheduled set, not the pending list).
+	require.NoError(t, q.EnqueueScheduled(ctx, domain.NotificationID("01940000-0000-7000-8000-000000000054"), domain.PriorityNormal, time.Now().Add(time.Hour)))
 
 	depths, err := q.QueueDepths(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 2, depths["high"], "two pending high-priority tasks")
-	require.Equal(t, 1, depths["normal"], "one pending normal-priority task")
-	require.Equal(t, 0, depths["low"], "scheduled task is not pending backlog")
+	require.Equal(t, 1, depths["normal"], "one pending; the scheduled task is not pending backlog")
+	// "low" was never touched, so asynq never created that queue.
+	require.Equal(t, 0, depths["low"], "an untouched queue reports depth 0, not an error")
 }
 
 // TestQueue_Enqueue_IdempotencyKeyDeduplicates: enqueueing the same task id
