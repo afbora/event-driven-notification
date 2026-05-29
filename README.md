@@ -87,7 +87,7 @@ the constitution (CLAUDE.md §1).
 |---|---|
 | Quality gate | SonarCloud **Passed** — 0 open issues, ≥80% new-code coverage |
 | CI pipeline | 8 jobs: lint, vuln, test-unit (race + coverage), test-integration, test-e2e, build, docker-build (smoke), sonarcloud |
-| Architecture | 15 ADRs in [`docs/adr/`](./docs/adr/) — every load-bearing choice documented |
+| Architecture | 16 ADRs in [`docs/adr/`](./docs/adr/) — every load-bearing choice documented |
 | Test discipline | Strict TDD: every `feat` commit is preceded by a matching `test` commit. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the rhythm. |
 | Commit convention | Conventional Commits, lowercase, no trailing period (CLAUDE.md §8) |
 | Branch policy | Feature branches → PR → **merge commit** (not squash) so the TDD rhythm stays visible in `main`'s history |
@@ -206,7 +206,7 @@ always-succeed behavior the rest of the stack relies on.
 ├── db/migrations/                # numbered SQL up/down pairs
 ├── tests/{integration,e2e,load}/ # build-tag-gated higher tiers
 └── docs/
-    ├── adr/                      # 11 architectural decision records
+    ├── adr/                      # 16 architectural decision records
     ├── RUNBOOK.md                # one entry per alert
     ├── LOAD_TEST.md              # k6 methodology + results
     ├── API_EXAMPLES.md           # curl recipes for every endpoint
