@@ -4,9 +4,11 @@
 // errors) — permanent failures (4xx) are caller errors and do not indicate
 // provider sickness.
 //
-// Default thresholds will be tuned via ADR once the production-like load
-// numbers are in (CLAUDE.md mentions an ADR-0007 in the skill index); for
-// now the caller supplies gobreaker.Settings directly.
+// Thresholds are not hard-coded here: the caller supplies gobreaker.Settings
+// directly (the worker builds them from config — see ADR-0016 and cmd/worker's
+// breakerSettings: open after 5 transient failures within a 10s window, fail
+// fast for 30s, then probe). Keeping policy out of this package lets a deploy
+// tune the breaker without touching the wrapper.
 package circuit
 
 import (

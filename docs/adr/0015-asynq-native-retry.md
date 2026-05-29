@@ -35,7 +35,7 @@ Implementation:
 - `application.RetryDelayFor(attempts, err) time.Duration` is the single policy API:
   - `errors.Is(err, ErrOutboundRateLimited)` → `rateLimitBackoff` (1 s).
   - everything else (transient sentinel + any unwrapped infrastructure error from the claim path) → `backoffFor(attempts)` (30 s, 60 s, 120 s, ...).
-- `cmd/worker/main.go` wires a one-line `retryDelay` shim that delegates to `application.RetryDelayFor` and sets it on `asynq.Config.RetryDelayFunc`. Policy stays in the application package; the worker only configures asynq.
+- `cmd/worker/main.go` wires a `retryDelay` shim that delegates to `application.RetryDelayFor` and sets it on `asynq.Config.RetryDelayFunc`. The deterministic schedule stays in the application package (so it stays unit-testable); the worker layers bounded jitter (`withJitter`) on top at this boundary, which is how the constitution's "exponential backoff **with jitter**" wording is honored without making the core policy non-deterministic.
 - `overdueRetryingThreshold` widens from 1 minute to **10 minutes**. The reconciler now only catches rows where asynq has truly lost the schedule (Redis flush, scheduler crash). Under healthy operation a retry fires within seconds — well inside the new threshold.
 
 ## Consequences
@@ -51,7 +51,7 @@ Implementation:
 **Negative:**
 
 - Two retry actors now exist (asynq native + reconciler safety-net sweep). Double-fire risk is real but bounded: the reconciler's `overdueRetryingThreshold` of 10 minutes is far past any realistic asynq retry latency, and the SQL filter is `next_retry_at < $1` so a row whose asynq retry is still pending stays invisible to the reconciler. Pinned by `TestFindOverdueRetrying_HappyPath`'s timing assertions and the unit-test coverage of `RetryDelayFor`.
-- Asynq's per-task `MaxRetry` defaults to 25; the application caps at `defaultMaxAttempts = 5` via the `applyResult` branch that returns nil (markFailed) when `n.Attempts >= max`. Asynq's count never trips because the application marks failed first. The asynq UI still shows MaxRetry=25, which is cosmetic but worth knowing during debugging — operators look at the row's `attempts` column or `notification_logs`, not asynq's retry counter, for ground truth.
+- The task is created with an explicit `MaxRetry(5)` (`internal/adapters/asynq/tasks.go`, `maxRetryAttempts = 5`), aligned with the application cap of `defaultMaxAttempts = 5`. In practice asynq's own retry counter never reaches that ceiling on transient failures: `applyResult` returns nil (markFailed) once `n.Attempts >= max`, so the row is marked failed before asynq would exhaust its count. Because both numbers agree at 5, the asynq UI and the application's `attempts` column tell the same story — operators read the row's `attempts` column or `notification_logs` for ground truth either way.
 - The error-return contract is now load-bearing: a future refactor that accidentally returns `nil` from `markRetrying` would silently disable retry. The unit tests (`TestProcessNotification_TransientFailure`, `_RateLimited`) assert `ErrorIs(...)` against the matching sentinel so the regression would surface in CI.
 
 ## Alternatives Considered

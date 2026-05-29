@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	nethttp "net/http"
 	"os"
 	"os/signal"
@@ -100,10 +101,18 @@ func run() error {
 		registry.Register(ch, buildProvider(cfg, ch))
 	}
 	// Wrap the registry in a circuit breaker so a sick provider opens
-	// the circuit and short-circuits subsequent calls (CLAUDE.md §3.x,
-	// ADR-0008). gobreaker's defaults are fine for this assessment;
-	// thresholds become an ADR later if traffic grows.
-	guardedProvider := circuit.New(registry, breakerSettings("provider-registry", appMetrics))
+	// the circuit and short-circuits subsequent calls (CLAUDE.md §3.5/§5,
+	// ADR-0016). Thresholds come from config (defaults 5 failures / 10s
+	// window / 30s open) rather than gobreaker's implicit defaults, so the
+	// running behavior matches the documented contract and an operator can
+	// tune it per deploy.
+	guardedProvider := circuit.New(registry, breakerSettings(
+		"provider-registry",
+		cfg.CircuitMaxFailures,
+		cfg.CircuitWindow,
+		cfg.CircuitOpenTimeout,
+		appMetrics,
+	))
 
 	// --- application use case ------------------------------------------
 	// Tracer is wired via the dedicated port adapter so the application
@@ -172,6 +181,16 @@ func run() error {
 		_ = metricsSrv.Shutdown(shutCtx)
 	}()
 
+	// --- queue-depth sampler -------------------------------------------
+	// The notifications_queue_depth gauge — and the HighQueueDepth alert
+	// that reads it — is otherwise only written in tests, so the alert can
+	// never fire in production. This loop polls asynq's pending backlog
+	// every 15s and stamps the gauge with a live series. It owns its own
+	// inspector connection and stops on rootCtx cancellation.
+	depthQueue := asynqadapter.NewQueue(hibikenasynq.RedisClientOpt{Addr: cfg.RedisAddr})
+	defer func() { _ = depthQueue.Close() }()
+	go sampleQueueDepth(rootCtx, depthQueue, appMetrics, 15*time.Second)
+
 	// asynq runs its own signal handler; we use rootCtx as a
 	// best-effort kill switch and rely on srv.Shutdown for graceful
 	// drain when the user hits Ctrl-C.
@@ -198,13 +217,67 @@ func run() error {
 }
 
 // retryDelay is the asynq.RetryDelayFunc shim that delegates to the
-// application package's RetryDelayFor. Asynq calls this when a task's
-// handler returns a non-nil error; the application package owns the
-// actual policy so the routing keys (typed sentinels) and the timing
-// (exponential / rate-limit) live together. n is 1-indexed by asynq
-// (the count of the attempt that just failed).
+// application package's RetryDelayFor and then layers jitter on top.
+// Asynq calls this when a task's handler returns a non-nil error; the
+// application package owns the deterministic policy so the routing keys
+// (typed sentinels) and the timing (exponential / rate-limit) live
+// together and stay unit-testable, while the jitter the constitution
+// calls for (CLAUDE.md §5, "exponential backoff with jitter") is added
+// here at the boundary. n is 1-indexed by asynq (the count of the
+// attempt that just failed).
 func retryDelay(n int, err error, _ *hibikenasynq.Task) time.Duration {
-	return application.RetryDelayFor(n, err)
+	return withJitter(application.RetryDelayFor(n, err), rand.Int64N)
+}
+
+// maxRetryJitter caps the random spread added to each retry delay. Bounding
+// the jitter to a fixed ceiling (rather than scaling it to the full backoff)
+// de-correlates a thundering herd without letting late exponential delays
+// grow an unbounded random tail.
+const maxRetryJitter = 30 * time.Second
+
+// withJitter spreads retries to avoid a thundering herd: when a provider
+// recovers, many tasks whose backoff expired at the same instant would
+// otherwise re-fire together and re-overload it. The deterministic base
+// (application.RetryDelayFor) is left untouched so unit tests can pin exact
+// values; jitter is applied only here at the asynq boundary. It is additive
+// — it never shortens the base, so the rate-limit floor still holds — and the
+// added amount is clamped to maxRetryJitter. draw is injected (rand.Int64N in
+// production) so the bounds are testable without real randomness.
+func withJitter(base time.Duration, draw func(int64) int64) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	bound := base
+	if bound > maxRetryJitter {
+		bound = maxRetryJitter
+	}
+	return base + time.Duration(draw(int64(bound)))
+}
+
+// sampleQueueDepth polls asynq's pending backlog on a fixed interval and
+// stamps the notifications_queue_depth gauge so the HighQueueDepth alert has
+// a live series to evaluate (the gauge is otherwise only written in tests).
+// Extracted from run() so that stays a thin wiring routine; it returns when
+// ctx is cancelled. A sampling error is logged and skipped — a transient
+// inspector hiccup must not kill the loop and freeze the gauge.
+func sampleQueueDepth(ctx context.Context, q *asynqadapter.Queue, m *metrics.Metrics, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			depths, err := q.QueueDepths(ctx)
+			if err != nil {
+				slog.Warn("queue depth sample failed", "error", err.Error())
+				continue
+			}
+			for name, depth := range depths {
+				m.SetQueueDepth(name, depth)
+			}
+		}
+	}
 }
 
 // buildProvider chooses between webhook and mock per channel. Each
@@ -241,19 +314,36 @@ func mockFailureMode(mode string) provideradapter.FailureMode {
 	return provideradapter.FailureTransient
 }
 
-// breakerSettings returns the gobreaker settings the worker uses for
-// every provider. Modest thresholds because a production tuning
-// requires real-world data — phase 5/6 may pull these into config.
+// breakerSettings returns the gobreaker settings the worker uses for the
+// provider registry. The thresholds are explicit (ADR-0016) so the running
+// breaker matches CLAUDE.md §5's documented behavior instead of gobreaker's
+// implicit defaults (which trip at >5 *consecutive* failures and stay open
+// 60s — both wrong against the constitution):
+//
+//   - ReadyToTrip fires once TotalFailures reaches maxFailures within the
+//     current counting window. The breaker only counts transient failures as
+//     failures (see internal/infrastructure/circuit), so a burst of caller
+//     4xx errors never trips it — only genuine provider sickness does.
+//   - Interval (window) is gobreaker's closed-state count-clear period, so
+//     "maxFailures within window" is a fixed window, not a sliding one.
+//   - Timeout (openTimeout) is how long the breaker fails fast before letting
+//     a single half-open probe (MaxRequests=1) through.
 //
 // OnStateChange is wired so transitions land on the
-// notifications_circuit_breaker_state gauge (0=closed, 1=open,
-// 2=half-open). m may be nil — the callback short-circuits and the
-// gauge stays unobserved, matching the previous behavior on bare
-// Settings construction.
-func breakerSettings(name string, m *metrics.Metrics) gobreaker.Settings {
+// notifications_circuit_breaker_state gauge (0=closed, 1=open, 2=half-open).
+// m may be nil — the callback short-circuits and the gauge stays unobserved,
+// matching the previous behavior on bare Settings construction.
+func breakerSettings(name string, maxFailures int, window, openTimeout time.Duration, m *metrics.Metrics) gobreaker.Settings {
 	return gobreaker.Settings{
 		Name:        name,
 		MaxRequests: 1,
+		Interval:    window,
+		Timeout:     openTimeout,
+		ReadyToTrip: func(c gobreaker.Counts) bool {
+			// uint32 -> int is safe on the 64-bit targets we ship; comparing
+			// in int avoids a lossy int -> uint32 conversion of the config value.
+			return int(c.TotalFailures) >= maxFailures
+		},
 		OnStateChange: func(stateName string, _, to gobreaker.State) {
 			if m == nil {
 				return

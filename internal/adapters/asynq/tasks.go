@@ -27,8 +27,10 @@ const (
 )
 
 // Retry policy constants come from CLAUDE.md §5 / ADR-0003: 5 attempts
-// before the task lands in the dead-letter queue. asynq applies its own
-// exponential backoff inside that envelope.
+// before the task lands in the dead-letter queue. The per-attempt backoff
+// inside that envelope is supplied by the worker's RetryDelayFunc
+// (ADR-0015, with jitter added in cmd/worker's withJitter) — not asynq's
+// built-in default schedule.
 const (
 	maxRetryAttempts     = 5
 	idempotencyWindow24h = 24 * time.Hour

@@ -123,6 +123,45 @@ func attributePriority(p domain.Priority) attribute.KeyValue {
 	return attribute.String("notification.priority", string(p))
 }
 
+// QueueDepths returns the number of pending (waiting) tasks in each priority
+// queue. "Pending" is exactly the backlog the HighQueueDepth alert watches —
+// tasks enqueued but not yet picked up by a worker. Scheduled (future) tasks
+// live in asynq's scheduled set and are deliberately excluded, so a
+// legitimately deferred notification never inflates the gauge and trips a
+// false alert.
+//
+// A priority with no traffic yet has no asynq queue at all, and
+// Inspector.GetQueueInfo returns a not-found error for it that is NOT the
+// exported ErrQueueNotFound sentinel (it surfaces rdb's internal error
+// verbatim), so errors.Is can't catch it. Rather than match on that, we
+// consult the set of queues asynq actually knows about (Queues) and report
+// any priority missing from it as depth 0 (no backlog). This keeps all three
+// priority series present on the gauge from the first scrape.
+func (q *Queue) QueueDepths(_ context.Context) (map[string]int, error) {
+	existing, err := q.inspector.Queues()
+	if err != nil {
+		return nil, fmt.Errorf("list queues: %w", err)
+	}
+	known := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		known[name] = true
+	}
+
+	depths := make(map[string]int, len(queueNames))
+	for _, name := range queueNames {
+		if !known[name] {
+			depths[name] = 0 // queue not created yet → no backlog
+			continue
+		}
+		info, err := q.inspector.GetQueueInfo(name)
+		if err != nil {
+			return nil, fmt.Errorf("queue info %s: %w", name, err)
+		}
+		depths[name] = info.Pending
+	}
+	return depths, nil
+}
+
 // Cancel removes any pending or scheduled task for the notification. This
 // is best-effort by design (port docs): a task that has already been picked
 // up by a worker is not retracted — the worker checks status before sending
